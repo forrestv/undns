@@ -29,6 +29,7 @@ def key_to_address(k):
 alphabet = '0123456789abcdefghijklmnopqrstuvwxyz'
 
 def key_to_tuple(k):
+    # todo: store bitwidth(actually not needed, i think) and type in tuple
     if k.has_private():
         k = k.key
         return (k.n, k.e, k.d, k.p, k.q, k.u)

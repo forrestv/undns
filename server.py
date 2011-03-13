@@ -6,6 +6,7 @@ import random
 import hashlib
 import optparse
 import json
+import subprocess
 
 import twisted.names.common, twisted.names.client, twisted.names.dns, twisted.names.server, twisted.names.error, twisted.names.authority
 del twisted
@@ -17,19 +18,31 @@ from entangled.kademlia import node, datastore
 import util
 import packet
 
-parser = optparse.OptionParser()
-parser.add_option("-a", "--authoritative", metavar="PORT",
+try:
+    __version__ = subprocess.Popen(["svnversion", os.path.dirname(sys.argv[0])], stdout=subprocess.PIPE).stdout.read().strip()
+except IOError:
+    __version__ = "unknown"
+
+name = "UnDNS (version %s)" % (__version__,)
+
+parser = optparse.OptionParser(version=__version__, description=name)
+parser.add_option("-a", "--authoritative-dns", metavar="PORT",
     help="run an authoritative dns server; you likely don't want this - this is for _the_ public nameserver",
     type="int", action="append", default=[], dest="authoritative_dns_ports")
-parser.add_option("-r", "--recursive", metavar="PORT",
+parser.add_option("-r", "--recursive-dns", metavar="PORT",
     help="run a recursive dns server on PORT; you likely do want this - this is for clients",
     type="int", action="append", default=[], dest="recursive_dns_ports")
 parser.add_option("-p", "--packet", metavar="FILE",
     help="read FILE every few seconds and sent its contained packet",
     type="string", action="append", default=[], dest="packet_filenames")
+parser.add_option("-d", "--dht-port", metavar="PORT",
+    help="use UDP port PORT to connect to other DHT nodes and listen for connections (if not specified a random high port is chosen)",
+    type="int", action="store", default=random.randrange(49152, 65536), dest="dht_port")
 (options, args) = parser.parse_args()
 
-port = random.randrange(49152, 65536)
+print name
+
+port = options.dht_port
 print "PORT:", port
 
 def parse(x):

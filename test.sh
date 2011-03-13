@@ -1,22 +1,22 @@
 #!/bin/bash
 
-python tool.py generate > .key
+python tool.py generate > $1.key
 
 echo key:
-cat .key
+cat $1.key
 echo
 
-python tool.py info .key > .url
+python tool.py info $1.key > $1.url
 
 echo url:
-cat .url
+cat $1.url
 echo
 
-python tool.py encode .key <(echo -n 42.42.13.37) > .packet
+python tool.py encode $1.key $1.zone > $1.packet
 
 echo packet:
-cat .packet
+cat $1.packet
 echo
 
 echo decode:
-python tool.py decode .packet $(cat .url)
+python tool.py decode $1.packet
