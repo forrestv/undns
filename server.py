@@ -15,6 +15,7 @@ from twisted.python import failure
 from entangled.kademlia import node, datastore
 
 import util
+import packet
 
 parser = optparse.OptionParser()
 parser.add_option("-a", "--authoritative", metavar="PORT",
@@ -36,17 +37,7 @@ def parse(x):
     return ip, int(port)
 knownNodes = map(parse, args)
 
-# some DNS
-
-class UnDNSAuthority(names.authority.BindAuthority):
-    def __init__(self, contents, origin):
-        names.common.ResolverBase.__init__(self)
-        self.origin = origin
-        lines = contents.splitlines(True)
-        lines = self.stripComments(lines)
-        lines = self.collapseContinuations(lines)
-        self.parseLines(lines)
-        self._cache = {}
+packets = [packet.Packet.from_json(open(filename).read()) for filename in options.packet_filenames]
 
 # DHT
 
@@ -60,19 +51,8 @@ class UnDNSNode(node.Node):
     def store(self, key, value, originalPublisherID=None, age=0, **kwargs):
         print repr((self, key, value, originalPublisherID, age, kwargs))
 
-        packet = json.loads(value)
-        RSApubkey = util.tuple_to_key(packet['pubkey'])
-        address = util.key_to_address(RSApubkey)
-        data = packet['data']
-        data_hash_signed = packet['data_hash_signed']
-    
-        if not (hashlib.sha1(address).digest() == key) or \
-                not RSApubkey.verify(hashlib.sha1(data).digest(), data_hash_signed):
-            print name_alone, "failed verify"
-            raise ValueError("invalid packet")
+        packet.Packet.from_json(value, address_hash=key) # will throw an exception if not valid
         
-        zone = UnDNSAuthority(data.encode('utf8'), address + '.')
-        print "success"
         node.Node.store(self, key, value, originalPublisherID, age, **kwargs)
 
 n = UnDNSNode(udpPort=port, dataStore=dataStore)
@@ -81,11 +61,9 @@ n.joinNetwork(knownNodes)
 print "ID:", n.id.encode('hex')
 
 def store(*args):
-    for packet_filename in options.packet_filenames:
-        packet = json.loads(open(packet_filename).read())
-        RSApubkey = util.tuple_to_key(packet['pubkey'])
-        print "publishing", util.key_to_address(RSApubkey)
-        n.iterativeStore(hashlib.sha1(util.key_to_address(RSApubkey)).digest(), json.dumps(packet))
+    for packet in packets:
+        print "publishing", packet.get_address()
+        n.iterativeStore(packet.get_address_hash(), packet.to_json())
     reactor.callLater(13.23324141, store)
 n._joinDeferred.addCallback(store)
 
@@ -117,20 +95,13 @@ class UnDNSResolver(names.common.ResolverBase):
                 return defer.fail(failure.Failure(names.dns.AuthoritativeDomainError(name)))
             
             assert isinstance(result, dict), result
-            packet = json.loads(result[name_hash])
+            packet = packet.Packet.from_json(result[name_hash])
             
-            RSApubkey = util.tuple_to_key(packet['pubkey'])
-            address = util.key_to_address(RSApubkey)
-            data = packet['data']
-            data_hash_signed = packet['data_hash_signed']
-        
-            if not (address == name_alone) or \
-                    not RSApubkey.verify(hashlib.sha1(data).digest(), data_hash_signed):
-                print name_alone, "failed verify"
+            if packet.get_address() != name_alone:
                 return defer.fail(failure.Failure(names.dns.AuthoritativeDomainError(name)))
             
-            zone = UnDNSAuthority(data.encode('utf8'), address + '.')
-            print name_alone, "succeeded!"
+            zone = UnDNSAuthority(packet.get_data().encode('utf8'), packet.get_address() + '.')
+            
             return zone._lookup(name, cls, type, timeout)
         return self.dht.iterativeFindValue(name_hash).addCallback(callback)
 

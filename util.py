@@ -1,7 +1,6 @@
 import hashlib
 
 from Crypto.PublicKey import RSA
-from Crypto import Random
 
 def int_to_string(i, alphabet):
     res = []
@@ -19,7 +18,6 @@ def string_to_int(s, alphabet):
         acc += place_value * alphabet.index(char)
         place_value *= len(alphabet)
     return acc
-
 
 def key_to_name(k):
     hash = int(hashlib.sha1(k.exportKey()).hexdigest(), 16)
