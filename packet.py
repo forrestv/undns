@@ -1,5 +1,6 @@
 import json
 import hashlib
+import zlib
 
 from Crypto.PublicKey import RSA
 import twisted.names.common, twisted.names.client, twisted.names.dns, twisted.names.server, twisted.names.error, twisted.names.authority
@@ -20,8 +21,8 @@ class BindStringAuthority(names.authority.BindAuthority):
 
 class Packet(object):
     @classmethod
-    def from_json(cls, x, address=None, address_hash=None):
-        d = json.loads(x)
+    def from_binary(cls, x, address=None, address_hash=None):
+        d = json.loads(zlib.decompress(x))
         return cls(util.tuple_to_key(d['public_key']), d['zone_file'], d['signature'], address, address_hash)
     
     def __init__(self, public_key, zone_file, signature, address=None, address_hash=None):
@@ -41,10 +42,10 @@ class Packet(object):
         if address is not None and self.get_address() != address:
             raise ValueError("address not correct")
         if address_hash is not None and self.get_address_hash() != address_hash:
-            raise ValueError("address hash hot correct")
+            raise ValueError("address hash not correct")
     
-    def to_json(self):
-        return json.dumps(dict(public_key=util.key_to_tuple(self._public_key), zone_file=self._zone_file, signature=self._signature))
+    def to_binary(self):
+        return zlib.compress(json.dumps(dict(public_key=util.key_to_tuple(self._public_key), zone_file=self._zone_file, signature=self._signature)))
     
     def get_address(self):
         return self._address
@@ -64,8 +65,8 @@ class PrivateKey(object):
         return cls(RSA.generate(1024, rng))
     
     @classmethod
-    def from_json(cls, x):
-        return cls(util.tuple_to_key(json.loads(x)))
+    def from_binary(cls, x):
+        return cls(util.tuple_to_key(json.loads(zlib.decompress(x))))
     
     def __init__(self, private_key):
         if not private_key.has_private():
@@ -73,8 +74,8 @@ class PrivateKey(object):
         
         self._private_key = private_key
     
-    def to_json(self):
-        return json.dumps(util.key_to_tuple(self._private_key))
+    def to_binary(self):
+        return zlib.compress(json.dumps(util.key_to_tuple(self._private_key)))
     
     def get_address(self):
         return util.key_to_address(self._private_key.publickey())

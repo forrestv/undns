@@ -5,7 +5,6 @@ import sys
 import random
 import hashlib
 import optparse
-import json
 import subprocess
 
 import twisted.names.common, twisted.names.client, twisted.names.dns, twisted.names.server, twisted.names.error, twisted.names.authority
@@ -15,7 +14,6 @@ from twisted.internet import reactor, defer
 from twisted.python import failure
 from entangled.kademlia import node, datastore
 
-import util
 import packet
 
 try:
@@ -38,6 +36,9 @@ parser.add_option("-p", "--packet", metavar="FILE",
 parser.add_option("-d", "--dht-port", metavar="PORT",
     help="use UDP port PORT to connect to other DHT nodes and listen for connections (if not specified a random high port is chosen)",
     type="int", action="store", default=random.randrange(49152, 65536), dest="dht_port")
+#parser.add_option("-n", "--node", metavar="ADDR:PORT",
+#    help="connect to existing DHT node at ADDR listening on UDP port PORT",
+#    type="int", action="append", default=random.randrange(49152, 65536), dest="dht_port")
 (options, args) = parser.parse_args()
 
 print name
@@ -50,7 +51,7 @@ def parse(x):
     return ip, int(port)
 knownNodes = map(parse, args)
 
-packets = [packet.Packet.from_json(open(filename).read()) for filename in options.packet_filenames]
+packets = [packet.Packet.from_binary(open(filename).read()) for filename in options.packet_filenames]
 
 # DHT
 
@@ -64,7 +65,7 @@ class UnDNSNode(node.Node):
     def store(self, key, value, originalPublisherID=None, age=0, **kwargs):
         print repr((self, key, value, originalPublisherID, age, kwargs))
 
-        packet.Packet.from_json(value, address_hash=key) # will throw an exception if not valid
+        packet.Packet.from_binary(value, address_hash=key) # will throw an exception if not valid
         
         node.Node.store(self, key, value, originalPublisherID, age, **kwargs)
 
@@ -76,7 +77,7 @@ print "ID:", n.id.encode('hex')
 def store(*args):
     for packet in packets:
         print "publishing", packet.get_address()
-        n.iterativeStore(packet.get_address_hash(), packet.to_json())
+        n.iterativeStore(packet.get_address_hash(), packet.to_binary())
     reactor.callLater(13.23324141, store)
 n._joinDeferred.addCallback(store)
 
@@ -108,7 +109,7 @@ class UnDNSResolver(names.common.ResolverBase):
                 return defer.fail(failure.Failure(names.dns.AuthoritativeDomainError(name)))
             
             assert isinstance(result, dict), result
-            packet = packet.Packet.from_json(result[name_hash])
+            packet = packet.Packet.from_binary(result[name_hash])
             
             if packet.get_address() != name_alone:
                 return defer.fail(failure.Failure(names.dns.AuthoritativeDomainError(name)))
