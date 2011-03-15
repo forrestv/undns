@@ -21,7 +21,7 @@ try:
 except IOError:
     __version__ = "unknown"
 
-name = "UnDNS (version %s)" % (__version__,)
+name = "UnDNS server (version %s)" % (__version__,)
 
 parser = optparse.OptionParser(version=__version__, description=name)
 parser.add_option("-a", "--authoritative-dns", metavar="PORT",
@@ -36,10 +36,12 @@ parser.add_option("-p", "--packet", metavar="FILE",
 parser.add_option("-d", "--dht-port", metavar="PORT",
     help="use UDP port PORT to connect to other DHT nodes and listen for connections (if not specified a random high port is chosen)",
     type="int", action="store", default=random.randrange(49152, 65536), dest="dht_port")
-#parser.add_option("-n", "--node", metavar="ADDR:PORT",
-#    help="connect to existing DHT node at ADDR listening on UDP port PORT",
-#    type="int", action="append", default=random.randrange(49152, 65536), dest="dht_port")
+parser.add_option("-n", "--node", metavar="ADDR:PORT",
+    help="connect to existing DHT node at ADDR listening on UDP port PORT",
+    type="string", action="append", default=[], dest="dht_nodes")
 (options, args) = parser.parse_args()
+if args:
+    parser.error("takes no arguments")
 
 print name
 
@@ -49,7 +51,7 @@ print "PORT:", port
 def parse(x):
     ip, port = x.split(':')
     return ip, int(port)
-knownNodes = map(parse, args)
+knownNodes = map(parse, options.dht_nodes)
 
 packets = [packet.Packet.from_binary(open(filename).read()) for filename in options.packet_filenames]
 
