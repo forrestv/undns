@@ -1,0 +1,99 @@
+obviously p2p ... no centralized point of control/failure
+	local peer discovery
+
+names - two options:
+	granted on a first-come first-serve basis
+	all random - a hash of a secret key, perhaps - or a public key! isn't that nice!
+		o.O tor already had that idea
+
+should there exist subdomains ... there doesn't really seem to be much point
+	*  www.fashdfjkahsjkfdlhasdjkfhaslkj.tba.tld
+	* mail.fashdfjkahsjkfdlhasdjkfhaslkj.tba.tld
+	as opposed to
+	*      qdshfjlhaorbwekfashfahfadshff.tba.tld
+	*      mvbnsakljhgfiwkjefbajhsdfahah.tba.tld
+
+each name is associated with variable data
+	ofc it is variable, because otherwise there would be no disadvantage to just using ip addresses
+	current ip address
+		more than one for balancing
+	TTL?
+	something about geographical balancing, since it's not possible in the usual way
+
+update propagation
+	updates are numbered by the sender
+		an evil person could use the maximum number, messing everything up
+	perhaps a timestamp would be better to avoid that
+		systems could ignore ones with timestamps in the future
+	update contains a complete copy of the new data
+
+the key question is about whether names need to be recognizable
+	do they need to be remembered?
+		how often are urls typed?
+	do they have value anymore?
+		google chrome hiding urls would seem to confirm that their value is declining
+		but the pricing of popular ones (sex.com, i think it was) would seem to indicate that they have value
+	what about authentication of SSL certificates?
+		they can just use the new urls on the certs
+			problem if using same ip, like with virtual hosting
+
+registering a domain is equivalent to injecting it into the p2p net
+	you'd want to maintain a server to ensure that it stays - nodes may purge unused names
+
+the only thing that preserves ownership of a name is keeping the private key
+	a market for encryption devices would arise to secure the key
+	a protocol for establishing control if a key is compromised would be important
+	special message that turns control completely over to some central authority
+		the central authority can't be declared in the message
+			would give the 'bad guys' an option to turn it over to themselves ... duh
+		has to be established
+
+hmm ... how about ...
+idk what i was going to say there (i return after 8 hours) but i have one new idea:
+
+to ease conversion, we make all new domain names valid old domain names by buying a domain name and using it as a suffix
+		- then running a DNS server to resolve names
+	ties nicely into existing infrastructure
+	sadly, this is a very central point of failure.
+		it must only be a stopgap measure
+		no way to avoid this, so let's find a good registrar
+			preferably not US based
+			does sweden have any? o.O
+				is sweden even that good ...
+	on the good side, it avoids name conflicts - no need to establish our own TLD
+
+migration
+	1. no attempt
+		names resolve through public dns and the central server
+	2. some attempt - dns server changed to public server
+		many servers, not just one
+		ISPs might agree to do this
+	3. complete - running the daemon
+		only way to completely ensure authenticity
+		daemon could run on a local router, usage would be automatic if it provided DNS server over DHCP
+
+p2p
+	bootstrapping
+		centralized point of failure ... ahh!
+		multiple sources
+			some peers addresses included
+			several http addresses that provide more included
+				no point in using new style addresses, they're just more vulnerable than others if not using a p2p resolver..
+			random pinging (:p)
+				might work on ipv4, not ipv6!
+	sharing
+
+status
+* going to use .undns.forre.st temporarily
+* twisted dns server
+
+* okay, meaningless names implementation is done, more or less
+
+meaningful names:
+
+* proof of work needed to avoid DOS and provide scarcity
+    * also needed to hold domain, otherwise it expires
+
+things learned from bitcoin:
+    * use an extensible protocol
+    * make rules explicit
