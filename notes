@@ -97,3 +97,6 @@ meaningful names:
 things learned from bitcoin:
     * use an extensible protocol
     * make rules explicit
+
+id generated from publickey hash
+all communications signed (or encrypted ...)
