@@ -133,7 +133,6 @@ class Node(protocol.DatagramProtocol):
     def think(self):
         if self.bootstrap_addresses:
             self.add_contact(random.choice(self.bootstrap_addresses))
-        
         self.ask_random_contact_for_peers()
         
         reactor.callLater(random.expovariate(1/.1), self.think)
