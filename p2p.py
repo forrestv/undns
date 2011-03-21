@@ -12,6 +12,7 @@ from twisted.python import failure
 import itertools
 
 import pygame
+d = None
 d = pygame.display.set_mode((512, 512))
 def get_coords(o):
     a = hash(o)
@@ -19,20 +20,24 @@ def get_coords(o):
     a, y = divmod(a, 512)
     return (x, y)
 def circle(c, pos, r):
+    if d is None: return
     pygame.draw.circle(d, c, pos, r)
 def line(c, a, b):
+    if d is None: return
     pygame.draw.line(d, c, a, b)
 circles = []
 def draw():
+    if d is None: return
     for c in circles:
         circle(*c)
     pygame.display.update()
     reactor.callLater(.1, draw)
 draw()
 
-def do_work(x, difficulty, stop_flag=[False]):
+def do_work(x, difficulty, stop_flag):
     for i in itertools.count(random.randrange(2**63)):
-        if stop_flag[0]: return
+        if stop_flag[0]:
+            return None
         d = json.dumps((x, i))
         if int(hashlib.sha1(d).hexdigest(), 16) % difficulty == 0:
             return d
@@ -51,7 +56,7 @@ def insort(a, x, lo=0, hi=None, key=lambda x: x):
             lo = mid + 1
     a.insert(lo, x)
 
-DEFAULT_TIMEOUT = 5#s
+DEFAULT_TIMEOUT = 10#s
 
 class RemoteNode(object):
     def __init__(self, protocol, address, id):
@@ -71,10 +76,10 @@ class RemoteNode(object):
                 if kwargs:
                     raise TypeError('%s() got an unexpected keyword argument %r' % (attr, kwargs.keys()[0]))
                 
-                tag = random.randrange(2**64)
+                tag = random.randrange(2**160)
                 d = defer.Deferred()
                 def timeout_func():
-                    self.protocol.queries.pop(tag)
+                    d, t = self.protocol.queries.pop(tag)
                     d.errback(defer.TimeoutError())
                 t = reactor.callLater(timeout, timeout_func)
                 
@@ -89,7 +94,29 @@ class RemoteNode(object):
 class RemoteError(Exception):
     pass
 
-GENESIS_DIFFICULTY = 10000
+GENESIS_DIFFICULTY = 10
+
+class Block(object):
+    @classmethod
+    def generate(cls, previous_hash, pos, message, difficulty):
+        contents = (previous_hash, pos, message, difficulty)
+        stop_flag = [False]
+        def abort(d):
+            stop_flag[0] = True
+        d = defer.Deferred(abort)
+        t = threads.deferToThread(do_work, contents, difficulty, stop_flag)
+        def f(result):
+            if stop_flag[0]:
+                return
+            d.callback(cls(result))
+        t.addBoth(f)
+        return d
+    def __init__(self, data):
+        self.data = data
+        self.hash = int(hashlib.sha1(data).hexdigest(), 16)
+        (self.previous_hash, self.pos, self.message, self.difficulty), nonce = json.loads(data)
+
+tags = set()
 
 class Node(protocol.DatagramProtocol):
     
@@ -106,171 +133,163 @@ class Node(protocol.DatagramProtocol):
     def __init__(self, port, bootstrap_addresses):
         #protocol.DatagramProtocol.__init__(self)
         self.peers = []
-        self.contacts = {} # address -> RemoteNode()
+        self.contacts = {} # (address, id) -> RemoteNode()
         self.queries = {}
         self.port = port
         self.bootstrap_addresses = bootstrap_addresses
-        self.id = random.randrange(2**128)
+        self.id = random.randrange(2**160)
         self.seen = set()
         
         self.blocks = {} # hash -> data
-        self.longest_chain_head_hash = None
-        self.longest_chain_head_callbacks = []
-        
-        if not self.blocks:
-            if self.accept(do_work((None, 0, "genesis", GENESIS_DIFFICULTY), GENESIS_DIFFICULTY), self.id) is not None:
-                raise ValueError
+        self.verified = set() # hashes of blocks that can be tracked to a genesis block
+        self.referrers = {} # hash -> list of hashes
+        self.best_block = None
+        self.best_block_callbacks = []
     
     def startProtocol(self):
         circles.append(((255, 0, 0), get_coords(self.id), 5))
         self.think()
         self.try_to_do_something()
-        #reactor.callLater(random.expovariate(1/.1), self.think)
-        #reactor.callLater(random.uniform(10, 12), self.try_to_do_something)
     
     # utility functions
+    
+    def say(self, *x):
+        print " " * (self.port%200), self.port, ' '.join(map(str,x))
     
     def think(self):
         if self.bootstrap_addresses:
             self.add_contact(random.choice(self.bootstrap_addresses))
         self.ask_random_contact_for_peers()
         
-        reactor.callLater(random.expovariate(1/.1), self.think)
-        #print len(self.peers)
+        reactor.callLater(random.expovariate(1/1), self.think)
     
     @defer.inlineCallbacks
     def try_to_do_something(self):
         while True:
-            #self.get_time_offset().addCallback(print_line)
-            previous_hash = self.longest_chain_head_hash
-            if previous_hash is None:
-                d = defer.Deferred()
-                self.longest_chain_head_callbacks.append(d.callback)
-                yield d
-                continue
-            previous_contents, previous_nonce = json.loads(self.blocks[previous_hash])
-            previous_previous_hash, previous_pos, previous_message, previous_difficulty = previous_contents
+            previous_block = self.best_block
+            if previous_block is None:
+                previous_hash = None
+                pos = 0
+                message = [self.port]
+                difficulty = GENESIS_DIFFICULTY
+            else:
+                previous_hash = previous_block.hash
+                pos = previous_block.pos + 1
+                message = previous_block.message + [self.port]
+                difficulty = previous_block.difficulty + (previous_block.difficulty + 999) // 1000
             
-            pos = previous_pos + 1
-            message = "%i was here! w00t" % (self.port,)
-            difficulty = previous_difficulty + (previous_difficulty + 999) // 1000
-            difficulty = previous_difficulty * 2
+            d = Block.generate(previous_hash, pos, message, difficulty)
+            def abort(d=d):
+                if not d.called:
+                    d.cancel()
+            self.best_block_callbacks.append(abort)
             
-            contents = previous_hash, pos, message, difficulty
+            try:
+                result = yield d
+            except defer.CancelledError:
+                continue # we aborted because of a new longest chain
             
-            stop_flag = [False]
-            def abort():
-                stop_flag[0] = True
-            self.longest_chain_head_callbacks.append(abort)
+            self.say("generated", result.message)
             
-            #print self.port, "start", pos
+            self.received_block(result, self)
             
-            result = yield threads.deferToThread(do_work, contents, difficulty, stop_flag)
-            
-            if result is None: # we aborted because of a new longest chain
-                #print self.port, "aborted", pos
-                continue
-            
-            print self.port, "generated", pos
-            
-            err = self.accept(result, self.id)
-            if err is not None:
-                print "GENERATED BLOCK NOT ACCEPTED BY SELF"
-            
-            #d = defer.Deferred()
-            #reactor.callLater(random.expovariate(1/1), d.callback, None)
-            #yield d
+            d2 = defer.Deferred()
+            reactor.callLater(random.expovariate(1/3), d2.callback, "pineapple")
+            yield d2
+            del d2
     
-    def accept(self, block, from_id):
-        try:
-            result = self.accept2(block)
-        except Exception, e:
-            #traceback.print_exc()
-            result = str(e)
-            #return False
-        print self.port, "RECEIVED BLOCK"
-        print "    BLOCK:", block
-        print "    RESULT:", result
-        if result is not None:
-            return result
-        for peer in self.peers:
-            if peer.id == from_id:
-                continue
-            peer.rpc_gossip(block)
-    
-    def accept2(self, block):
-        hash = int(hashlib.sha1(block).hexdigest(), 16)
+    def received_block(self, block, from_node=None):
+        if block.hash in self.verified:
+            return "already verified"
         
-        if hash in self.blocks:
-            return "already accepted"
-        
-        contents, nonce = json.loads(block)
-        
-        previous_hash, pos, message, difficulty = contents
-        
-        if hash % difficulty != 0:
+        if block.hash % block.difficulty != 0:
             return "invalid nonce"
         
-        if self.longest_chain_head_hash is not None and pos < self.longest_chain_head_pos - 10:
+        if self.best_block is not None and block.pos < self.best_block.pos - 16:
             return "you lose"
         
-        if pos == 0:
-            if previous_hash is not None:
+        if block.pos == 0:
+            if block.previous_hash is not None:
                 return "genesis block can't refer to previous..."
             
-            if difficulty != GENESIS_DIFFICULTY:
+            if block.difficulty != GENESIS_DIFFICULTY:
                 return "genesis difficulty"
+            
+            self.blocks[block.hash] = block
+            self.verified_block(block, from_node)
         else:
-            if previous_hash not in self.blocks:
-                p = random.choice(self.peers)
-                p.rpc_get_block(previous_hash).addCallback(lambda block: self.accept(block, p.id)).addCallback(print_line)
+            if block.previous_hash not in self.blocks or block.previous_hash not in self.verified:
+                self.blocks[block.hash] = block
+                
+                self.referrers.setdefault(block.hash, []).append(block)
+                if from_node is None:
+                    from_node = random.choice(self.peers)
+                def got_block(data):
+                    if data is None: return
+                    self.received_block(Block(data))
+                from_node.rpc_get_block(block.previous_hash).addCallback(got_block)
+                
                 return "chain not formed, XXX maybe use deferred ..."
-            
-            previous_block = self.blocks[previous_hash]
-            previous_contents, previous_nonce = json.loads(previous_block)
-            prevous_hash, previous_pos, previous_message, previous_difficulty = previous_contents
-            
-            if pos != previous_pos + 1:
-                return "pos needs to advance by 1"
-            
-            if difficulty != previous_difficulty * 2: # previous_difficulty + (previous_difficulty + 999) // 1000:
-                return "difficulty must follow pattern"
+            else:
+                previous_block = self.blocks[block.previous_hash]
+                
+                if block.pos != previous_block.pos + 1:
+                    return "pos needs to advance by 1"
+                
+                if block.difficulty != previous_block.difficulty + (previous_block.difficulty + 999) // 1000:
+                    return "difficulty must follow pattern"
+                
+                self.blocks[block.hash] = block
+                self.verified_block(block)
+    
+    def verified_block(self, block, from_node=None):
+        assert block.hash in self.blocks
         
-        self.blocks[hash] = block
-        #print self.port, "received", pos
+        self.verified.add(block.hash)
         
-        if self.longest_chain_head_hash is None or pos > self.longest_chain_head_pos:
-            self.longest_chain_head_hash = hash
-            self.longest_chain_head_pos = pos
-            cbs = self.longest_chain_head_callbacks
-            self.longest_chain_head_callbacks = []
+        for referring_block in self.referrers.pop(block.hash, []):
+            self.received_block(referring_block) # no from_node here because we might send the newly released block back
+        
+        for peer in self.peers:
+            if peer == from_node:
+                continue
+            self.say("spreading to", peer.address[1])
+            peer.rpc_gossip(block.data)
+        
+        if self.best_block is None or block.pos > self.best_block.pos:
+            self.best_block = block
+            
+            cbs = self.best_block_callbacks
+            self.best_block_callbacks = []
             for cb in cbs:
                 cb()
     
-    @defer.inlineCallbacks
     def add_contact(self, address, remote_id=None):
-        if address in self.contacts:
-            return
         if remote_id is None:
             RemoteNode(self, address, None).rpc_ping() # response will contain id and add_contact will be called
             return
         if remote_id == self.id:
             return
+        if (address, remote_id) in self.contacts:
+            return self.contacts[(address, remote_id)]
         rn = RemoteNode(self, address, remote_id)
-        self.contacts[address] = rn
+        self.contacts[(address, remote_id)] = rn
         insort(self.peers, rn, key=self.distance_to_node)
         line((self.distance_to_node(rn)/(2.**128)*255, 0, self.distance_to_node(rn)/(2.**128)*255), get_coords(self.id), get_coords(remote_id))
-        his_hash = yield rn.rpc_get_longest_chain_head_hash()
-        if his_hash in self.blocks:
-            return
-        block = yield rn.rpc_get_block(his_hash)
-        self.accept(block, rn.id)
+        @defer.inlineCallbacks
+        def f(his_hash):
+            if his_hash is None:
+                return
+            if his_hash in self.blocks:
+                return
+            block = Block((yield rn.rpc_get_block(his_hash)))
+            if block is None: return # shouldn't happen, ever ...
+            self.received_block(block, rn)
+        rn.rpc_get_best_block_hash().addCallback(f)
+        return rn
     
     @defer.inlineCallbacks
     def ask_random_contact_for_peers(self):
-        #if not self.contacts:
-        #    return
-        #c = random.choice(self.contacts.values())
         if not self.peers:
             return
         c = random.choice(self.peers[:5]) # closest
@@ -299,15 +318,23 @@ class Node(protocol.DatagramProtocol):
     def datagramReceived(self, datagram, addr):
         #if random.randrange(100) == 0:
         #    return # randomly drop packets
+        #print datagram, addr
         
         remote_id, is_answer, contents = json.loads(datagram)
-        self.add_contact(addr, remote_id)
+        rn = self.add_contact(addr, remote_id)
         if is_answer:
             tag, is_error, response = contents
-            d, t = self.queries.pop(tag)
+            try:
+                d, t = self.queries.pop(tag)
+            except KeyError:
+                return
             
             t.cancel()
             
+            #print self.port, tag, repr(response)
+            if tag in tags:
+                print "AHHHHHHHHHHHHH"
+            tags.add(tag)
             if is_error:
                 d.errback(RemoteError(response))
             else:
@@ -318,7 +345,7 @@ class Node(protocol.DatagramProtocol):
             method = getattr(self, "rpc_" + method_name)
             
             try:
-                v = yield method((addr, remote_id), *args)
+                v = yield method((addr, remote_id, rn), *args)
             except Exception, e:
                 is_error = True
                 response = str(e)
@@ -333,27 +360,32 @@ class Node(protocol.DatagramProtocol):
         return defer.succeed("pong")
     
     def rpc_get_contacts(self, _):
-        return defer.succeed([(c.address, c.id) for c in self.contacts.itervalues()])
+        return defer.succeed([(c.address, c.id) for c in self.peers])
     
-    def rpc_get_my_address(self, (address, id)):
+    def rpc_get_my_address(self, (address, id, node)):
         return defer.succeed(address)
     
     def rpc_get_close_nodes(self, _, dest, n):
         return defer.succeed([(close_peer.address, close_peer.id) for close_peer in sorted(self.peers, key=lambda peer: peer.distance_to_id(dest))[:n]])
     
-    def rpc_get_longest_chain_head_hash(self, _):
-        return self.longest_chain_head_hash
+    def rpc_get_best_block_hash(self, _):
+        if self.best_block is None:
+            return defer.succeed(None)
+        return defer.succeed(self.best_block.hash)
     
-    def rpc_gossip(self, (address, id), x):
+    def rpc_gossip(self, (address, id, node), x):
         line((255-self.distance_to_id(id)/(2.**128)*255, 255, 255-self.distance_to_id(id)/(2.**128)*255), get_coords(self.id), get_coords(id))
         reactor.callLater(.1, line, (255-self.distance_to_id(id)/(2.**128)*255, 0, 255-self.distance_to_id(id)/(2.**128)*255), get_coords(self.id), get_coords(id))
         
-        result = self.accept(x, id)
-        if result is not None:
-            return
+        self.received_block(Block(x), node)
+        
+        return defer.succeed(None)
     
     def rpc_get_block(self, _, hash):
-        return defer.succeed(self.blocks[hash])
+        if hash in self.blocks:
+            return defer.succeed(self.blocks[hash].data)
+        else:
+            return defer.succeed(None)
     
     def rpc_get_time(self, _):
         return defer.succeed(time.time())
@@ -388,9 +420,13 @@ def add_node(knowns=[]):
         else:
             return port
 
-if 1:
+if 0:
     pool = []
-    task.LoopingCall(lambda: pool.append(add_node(random.sample(pool, 1) if pool else []))).start(3)
+    task.LoopingCall(lambda: pool.append(add_node(random.sample(pool, 1) if pool else []))).start(13)
+
+pool = []
+for i in xrange(3):
+    reactor.callLater(10*i, lambda: pool.append(add_node(random.sample(pool, 1) if pool else [])))
 
 
 
