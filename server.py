@@ -25,7 +25,7 @@ name = "UnDNS server (version %s)" % (__version__,)
 
 parser = optparse.OptionParser(version=__version__, description=name)
 parser.add_option("-a", "--authoritative-dns", metavar="PORT",
-    help="run an authoritative dns server; you likely don't want this - this is for _the_ public nameserver",
+    help="run an authoritative dns server on PORT; you likely don't want this - this is for _the_ public nameserver",
     type="int", action="append", default=[], dest="authoritative_dns_ports")
 parser.add_option("-r", "--recursive-dns", metavar="PORT",
     help="run a recursive dns server on PORT; you likely do want this - this is for clients",
