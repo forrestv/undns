@@ -92,7 +92,7 @@ class RemoteNode(object):
                 def timeout_func():
                     if self in self.protocol.peers:
                         self.protocol.peers.remove(self)
-                        self.contacts.pop((self.address, self.id))
+                        self.protocol.contacts.pop((self.address, self.id))
                         self.protocol.bad_peers.add(self)
                     print "query timed out"
                     d, t = self.protocol.queries.pop(tag)
@@ -247,6 +247,8 @@ class Node(protocol.DatagramProtocol):
                 assert b.previous_hash is not None
                 if b.previous_hash not in self.blocks:
                     if from_node is None:
+                        if not self.peers:
+                            return
                         from_node = random.choice(self.peers)
                     def got_block(datas):
                         print datas
