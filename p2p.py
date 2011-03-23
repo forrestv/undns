@@ -92,6 +92,7 @@ class RemoteNode(object):
                 def timeout_func():
                     if self in self.protocol.peers:
                         self.protocol.peers.remove(self)
+                        self.contacts.pop((self.address, self.id))
                         self.protocol.bad_peers.add(self)
                     print "query timed out"
                     d, t = self.protocol.queries.pop(tag)
