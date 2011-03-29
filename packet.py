@@ -82,3 +82,72 @@ class PrivateKey(object):
     
     def encode(self, zone_file, rng):
         return Packet(self._private_key.publickey(), zone_file, self._private_key.sign(hashlib.sha1(zone_file).digest(), rng))
+
+class TheirIdentity(object):
+    @classmethod
+    def from_binary(cls, x):
+        return cls(util.tuple_to_key(json.loads(zlib.decompress(x))))
+    
+    def __init__(self, public_key):
+        if public_key.has_private():
+            raise ValueError("key not public")
+        
+        self._public_key = public_key
+    
+    def to_binary(self):
+        return zlib.compress(json.dumps(util.key_to_tuple(self._public_key)))
+    
+    def get_id(self):
+        return util.hash_address(util.key_to_string(self._public_key))
+    
+    def verify(self, data, signature):
+        return self._public_key.verify(util.hash_sign(data), signature)
+
+class MyIdentity(object):
+    @classmethod
+    def generate(cls, rng):
+        return cls(RSA.generate(1024, rng))
+    
+    @classmethod
+    def from_binary(cls, x):
+        return cls(util.tuple_to_key(json.loads(zlib.decompress(x))))
+    
+    def __init__(self, private_key):
+        if not private_key.has_private():
+            raise ValueError("key not private")
+        
+        self._private_key = private_key
+    
+    def to_binary(self):
+        return zlib.compress(json.dumps(util.key_to_tuple(self._private_key)))
+    
+    def get_id(self):
+        return util.hash_address(util.key_to_string(self._private_key.publickey()))
+    
+    def to_binary_public(self):
+        return zlib.compress(json.dumps(util.key_to_tuple(self._private_key.publickey())))
+    
+    def sign(self, data, rng):
+        return self._private_key.sign(util.hash_sign(data), rng)
+
+if __name__ == '__main__':
+    from Crypto import Random
+    rng = Random.new().read
+    
+    h = "hello, world!"
+    
+    a = MyIdentity.generate(rng)
+    
+    print repr(a.to_binary())
+    print repr(a.get_id())
+    print repr(a.to_binary_public())
+    
+    print
+    d = a.sign(h, rng)
+    print repr(d)
+    
+    b = TheirIdentity.from_binary(a.to_binary_public())
+    
+    print repr(b.get_id())
+    print b.verify(h, d)
+

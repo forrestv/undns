@@ -1,0 +1,40 @@
+clients can't hold all updates
+    clients could garbage collect old updates _but they still have to initially receive them_
+
+store data in blockchain just as a hash
+    get actual data over DHT
+    avoids versioning requirements
+
+
+
+two steps
+    publishes create some proof-of-work that can't be quickly replicated (and the domain claimed) and spread it to nodes
+    nodes work and create a new block every 10 minutes containing all entries from publishers
+    
+
+decision tree
+    all clients contain complete block chain
+    clients contain abridged block chain and use it to verify
+
+
+
+
+actually quite simple
+
+clients hold all headers and keep track of them
+        DHT returns block from query 'whar google.com'?
+        client verifies that block is in header chain
+                to prevent replying with old blocks, to spoof old records
+                block expiry is measured in blocks - clients can absolutely tell whether a block is valid based on header chain
+                        having to declare an expiration date is annoying - time-critical updates can't happen
+                                expiration could just be smallish
+
+something like a skip list to prevent having to hold all headers
+        client could initially get every n blocks - each block has a reference to the 1st previous and the nth previous
+
+using only the fact that it's in the block chain relies on trusting the generating nodes to not accept invalid claims such as ones that override past registrations
+
+desired rate - one block every 1000 seconds
+    - 31556.952 blocks per year
+    size of headers seems fine - in the range of 1-10 MB/year - (bytes/block / 31.7) MB/year
+        with a target of 1-10 MB/year that's 32-317 bytes/block

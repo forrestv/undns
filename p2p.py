@@ -36,7 +36,7 @@ draw()
 
 def do_work(x, difficulty, stop_flag):
     d = "[%s, " % json.dumps(x)
-    h = hashlib.sha1(d)
+    h = hashlib.sha256(d)
     for i in itertools.count(random.randrange(2**63)):
         if stop_flag[0]:
             return None
@@ -153,7 +153,6 @@ class Node(protocol.DatagramProtocol):
         self.port = port
         self.bootstrap_addresses = bootstrap_addresses
         self.id = random.randrange(2**160)
-        self.seen = set()
         
         self.blocks = {} # hash -> data
         self.verified = set() # hashes of blocks that can be tracked to a genesis block
@@ -309,7 +308,7 @@ class Node(protocol.DatagramProtocol):
     
     def add_contact(self, address, remote_id=None):
         if remote_id is None:
-            RemoteNode(self, address, None).rpc_ping() # response will contain id and add_contact will be called
+            RemoteNode(self, address, None).rpc_ping().addErrback(lambda fail: None) # response will contain id and add_contact will be called
             return
         if remote_id == self.id:
             return
