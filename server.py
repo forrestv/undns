@@ -6,11 +6,12 @@ import os
 import sys
 import random
 import hashlib
-import optparse
+import argparse
 import subprocess
 import traceback
 import json
 import itertools
+import sqlite3
 import time
 
 import twisted.names.common, twisted.names.client, twisted.names.dns, twisted.names.server, twisted.names.error, twisted.names.authority
@@ -18,6 +19,7 @@ del twisted
 from twisted import names
 from twisted.internet import reactor, defer, protocol, threads, task, error
 from twisted.python import failure
+from twisted.protocols import basic
 from entangled.kademlia import node, datastore
 
 import packet
@@ -30,39 +32,46 @@ except IOError:
 
 name = "UnDNS server (version %s)" % (__version__,)
 
-parser = optparse.OptionParser(version=__version__, description=name)
-parser.add_option("-a", "--authoritative-dns", metavar="PORT",
+parser = argparse.ArgumentParser(description=name)
+parser.add_argument('--version', action='version', version=__version__)
+parser.add_argument("-a", "--authoritative-dns", metavar="PORT",
     help="run an authoritative dns server on PORT; you likely don't want this - this is for _the_ public nameserver",
-    type="int", action="append", default=[], dest="authoritative_dns_ports")
-parser.add_option("-r", "--recursive-dns", metavar="PORT",
+    type=int, action="append", default=[], dest="authoritative_dns_ports")
+parser.add_argument("-r", "--recursive-dns", metavar="PORT",
     help="run a recursive dns server on PORT; you likely do want this - this is for clients",
-    type="int", action="append", default=[], dest="recursive_dns_ports")
-parser.add_option("-p", "--packet", metavar="FILE",
-    help="read FILE every few seconds and sent its contained packet",
-    type="string", action="append", default=[], dest="packet_filenames")
-parser.add_option("-d", "--dht-port", metavar="PORT",
+    type=int, action="append", default=[], dest="recursive_dns_ports")
+parser.add_argument("-d", "--dht-port", metavar="PORT",
     help="use UDP port PORT to connect to other DHT nodes and listen for connections (if not specified a random high port is chosen)",
-    type="int", action="store", default=random.randrange(49152, 65536), dest="dht_port")
-parser.add_option("-n", "--node", metavar="[ADDR:=127.0.0.1:]PORT",
+    type=int, action="store", default=random.randrange(49152, 65536), dest="dht_port")
+parser.add_argument("-n", "--node", metavar="ADDR:PORT",
     help="connect to existing DHT node at ADDR listening on UDP port PORT",
-    type="string", action="append", default=[], dest="dht_nodes")
-(options, args) = parser.parse_args()
-if args:
-    parser.error("takes no arguments")
+    action="append", default=[], dest="dht_nodes")
+parser.add_argument("-l", "--listen", metavar="PORT",
+    help="listen on PORT for RPC connections to manage server",
+    type=int, action="append", default=[], dest="rpc_ports")
+
+config_default = os.path.join(os.path.expanduser('~'), '.undns')
+parser.add_argument("-c", "--config", metavar="PATH",
+    help="use configuration database at PATH (default: %s)" % (config_default,),
+    action="store", default=config_default, dest="config")
+args = parser.parse_args()
 
 print name
 
-port = options.dht_port
+port = args.dht_port
 print "PORT:", port
+
+db = sqlite3.connect(args.config)
+db.execute("create table if not exists blocks (hash blob primary key, data blob)")
 
 def parse(x):
     if ':' not in x:
         return ('127.0.0.1', int(x))
     ip, port = x.split(':')
     return ip, int(port)
-knownNodes = map(parse, options.dht_nodes)
+knownNodes = map(parse, args.dht_nodes)
 
-packets = [packet.Packet.from_binary(open(filename).read()) for filename in options.packet_filenames]
+#packets = [packet.Packet.from_binary(open(filename).read()) for filename in args.packet_filenames]
 
 # DHT
 
@@ -96,6 +105,7 @@ def sleep(t):
     return d
 
 GENESIS_DIFFICULTY = 100
+LOOKBEHIND = 20
 
 class Block(object):
     @classmethod
@@ -121,27 +131,35 @@ class Block(object):
         (self.previous_hash, self.pos, self.timestamp, self.total_difficulty, self.message, self.difficulty), self.nonce = json.loads(data)
 
 class BlockDB(object):
-    def __init__(self):
-        import bsddb
-        self._db = bsddb.hashopen("/tmp/%i" % (random.randrange(2**64),))
+    def __init__(self, db):
+        self._db = db
     def __getitem__(self, key):
-        key = str(key)
-        value = self._db[key]
+        key = util.natural_to_string(key)
+        value, = self._db.execute("select data from blocks where hash == ?", [buffer(key)]).fetchone()
+        value = str(value)
         if value == "":
             return None
         return Block(value)
     def __setitem__(self, key, value):
-        key = str(key)
+        try:
+            self.pop(key)
+        except:
+            pass
+        #assert key == value.hash_id
+        key = util.natural_to_string(key)
         if value is None:
-            self._db[key] = ""
+            value = ""
         else:
-            self._db[key] = value.data
+            value = value.data
+        self._db.execute("insert into blocks (hash, data) values (?, ?)", [buffer(key), buffer(value)])
     def __contains__(self, key):
-        key = str(key)
-        return key in self._db
+        key = util.natural_to_string(key)
+        return bool(self._db.execute("select hash from blocks where hash == ?", [buffer(key)]).fetchall())
     def pop(self, key):
-        key = str(key)
-        value = self._db.pop(key)
+        key = util.natural_to_string(key)
+        value, = self._db.execute("select data from blocks where hash == ?", [buffer(key)]).fetchone()
+        value = str(value)
+        self._db.execute("delete from blocks where hash == ?", [buffer(key)])
         if value == "":
             return None
         return Block(value)
@@ -157,10 +175,8 @@ class UnDNSNode(node.Node):
     def __init__(self, *args, **kwargs):
         node.Node.__init__(self, *args, **kwargs)
         
-        print 1
-        
         self.blocks = {} # hash -> data
-        #self.blocks = BlockDB()
+        self.blocks = BlockDB(db)
         self.verified = set() # hashes of blocks that can be tracked to a genesis block
         self.referrers = {} # hash -> list of hashes
         self.best_block = None
@@ -178,19 +194,9 @@ class UnDNSNode(node.Node):
     @defer.inlineCallbacks
     def push_task(self):
         while True:
-            print "store"
-            for packet in packets:
-                print "publishing", packet.get_address()
-                n.iterativeStore(packet.get_address_hash(), packet.to_binary())
-            if self.best_block is not None:
-                res = []
-                cur = self.best_block
-                while True:
-                    res.append((cur.timestamp, cur.difficulty))
-                    if cur.previous_hash is None:
-                        break
-                    cur = self.blocks[cur.previous_hash]
-                print "{" + ', '.join("{%i, %i}" % x for x in res[::-1]) + "}"
+            #for packet in packets:
+            #    print "publishing", packet.get_address()
+            #    n.iterativeStore(packet.get_address_hash(), packet.to_binary())
             yield sleep(random.expovariate(1/6))
     
     @node.rpcmethod
@@ -252,7 +258,6 @@ class UnDNSNode(node.Node):
     @defer.inlineCallbacks
     def try_to_do_something(self):
         while True:
-            print "hello"
             previous_block = self.best_block
             if previous_block is None:
                 previous_hash = None
@@ -273,7 +278,7 @@ class UnDNSNode(node.Node):
                 else:
                     difficulty_sum = 0
                     cur = previous_block
-                    for i in xrange(200):
+                    for i in xrange(LOOKBEHIND):
                         if cur.previous_hash is None:
                             break
                         difficulty_sum += cur.difficulty
@@ -373,7 +378,7 @@ class UnDNSNode(node.Node):
             else:
                 difficulty_sum = 0
                 cur = previous_block
-                for i in xrange(200):
+                for i in xrange(LOOKBEHIND):
                     if cur.previous_hash is None:
                         break
                     difficulty_sum += cur.difficulty
@@ -464,14 +469,43 @@ class UnDNSResolver(names.common.ResolverBase):
 resolver = UnDNSResolver(n)
 
 authoritative_dns = names.server.DNSServerFactory(authorities=[resolver])
-for port in options.authoritative_dns_ports:
+for port in args.authoritative_dns_ports:
     reactor.listenTCP(port, authoritative_dns)
     reactor.listenUDP(port, names.dns.DNSDatagramProtocol(authoritative_dns))
 
 recursive_dns = names.server.DNSServerFactory(authorities=[resolver], clients=[names.client.createResolver()])
-for port in options.recursive_dns_ports:
+for port in args.recursive_dns_ports:
     reactor.listenTCP(port, recursive_dns)
     reactor.listenUDP(port, names.dns.DNSDatagramProtocol(recursive_dns))
+
+# RPC
+
+
+class RPCProtocol(basic.LineReceiver):
+    def lineReceived(self, line):
+        method, args = json.loads(line)
+        try:
+            res = json.dumps(getattr(self, "rpc_" + method)(*args))
+        except Exception, e:
+            res = json.dumps(str(e))
+        self.sendLine(res)
+    def rpc_help(self):
+        return "hi!"
+    def rpc_get_graph(self):
+        self = n
+        res = []
+        if self.best_block is not None:
+            cur = self.best_block
+            while True:
+                res.append((cur.timestamp, cur.difficulty))
+                if cur.previous_hash is None:
+                    break
+                cur = self.blocks[cur.previous_hash]
+        return "{" + ', '.join("{%i, %i}" % x for x in res[::-1]) + "}"
+rpc_factory = protocol.ServerFactory()
+rpc_factory.protocol = RPCProtocol
+for port in args.rpc_ports:
+    reactor.listenTCP(port, rpc_factory)
 
 # global
 
