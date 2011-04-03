@@ -13,6 +13,7 @@ import json
 import itertools
 import sqlite3
 import time
+import bsddb
 
 import twisted.names.common, twisted.names.client, twisted.names.dns, twisted.names.server, twisted.names.error, twisted.names.authority
 del twisted
@@ -24,6 +25,7 @@ from entangled.kademlia import node, datastore
 
 import packet
 import util
+import db
 
 try:
     __version__ = subprocess.Popen(["svnversion", os.path.dirname(sys.argv[0])], stdout=subprocess.PIPE).stdout.read().strip()
@@ -61,8 +63,7 @@ print name
 port = args.dht_port
 print "PORT:", port
 
-db = sqlite3.connect(args.config)
-db.execute("create table if not exists blocks (hash blob primary key, data blob)")
+db_prefix = args.config
 
 def parse(x):
     if ':' not in x:
@@ -127,42 +128,26 @@ class Block(object):
     def __init__(self, data):
         self.data = data
         self.hash_difficulty = int(util.hash_difficulty(data).hexdigest(), 16)
-        self.hash_id = int(hashlib.sha1(self.data).hexdigest(), 16)
+        self.hash_id = hashlib.sha1(self.data).hexdigest()
         (self.previous_hash, self.pos, self.timestamp, self.total_difficulty, self.message, self.difficulty), self.nonce = json.loads(data)
 
-class BlockDB(object):
-    def __init__(self, db):
-        self._db = db
+class BlockDictWrapper(object):
+    # int -> Block : str -> str
+    def __init__(self, inner):
+        self._inner = inner
     def __getitem__(self, key):
-        key = util.natural_to_string(key)
-        value, = self._db.execute("select data from blocks where hash == ?", [buffer(key)]).fetchone()
-        value = str(value)
-        if value == "":
-            return None
-        return Block(value)
+        block = Block(self._inner[key])
+        if block.hash_id != key:
+            print "warning: invalid block in db!"
+            self._inner[key]
+            raise KeyError()
+        return block
     def __setitem__(self, key, value):
-        try:
-            self.pop(key)
-        except:
-            pass
-        #assert key == value.hash_id
-        key = util.natural_to_string(key)
-        if value is None:
-            value = ""
-        else:
-            value = value.data
-        self._db.execute("insert into blocks (hash, data) values (?, ?)", [buffer(key), buffer(value)])
+        if value.hash_id != key:
+            raise ValueError("invalid block insertion")
+        self._inner[key] = value.data
     def __contains__(self, key):
-        key = util.natural_to_string(key)
-        return bool(self._db.execute("select hash from blocks where hash == ?", [buffer(key)]).fetchall())
-    def pop(self, key):
-        key = util.natural_to_string(key)
-        value, = self._db.execute("select data from blocks where hash == ?", [buffer(key)]).fetchone()
-        value = str(value)
-        self._db.execute("delete from blocks where hash == ?", [buffer(key)])
-        if value == "":
-            return None
-        return Block(value)
+        return key in self._inner
 
 class UnDNSNode(node.Node):
     @property
@@ -175,12 +160,12 @@ class UnDNSNode(node.Node):
     def __init__(self, *args, **kwargs):
         node.Node.__init__(self, *args, **kwargs)
         
-        self.blocks = {} # hash -> data
-        self.blocks = BlockDB(db)
-        self.verified = set() # hashes of blocks that can be tracked to a genesis block
+        self.blocks = db.CachingDictWrapper(BlockDictWrapper(bsddb.hashopen(db_prefix + '.blocks')))
+        self.verified = db.CachingSetWrapper(db.SetDictWrapper(bsddb.hashopen(db_prefix + '.verified')))
         self.referrers = {} # hash -> list of hashes
         self.best_block = None
         self.best_block_callbacks = []
+        self.best_block = max((block for block in self.blocks if block.hash_id in self.verified), key=lambda block: block.total_difficulty)
     
     def joinNetwork(self, *args, **kwargs):
         node.Node.joinNetwork(self, *args, **kwargs)
@@ -213,6 +198,20 @@ class UnDNSNode(node.Node):
             self.received_block(Block(block_data), _rpcNodeContact)
         except:
             traceback.print_exc()
+    
+    @node.rpcmethod
+    def handle_new_request(self, request_data):
+        request = Request(request_data)
+        if request.hash_id in self.requests:
+            return
+        
+        # check
+        
+        self.requests[request.hash_id] = request
+    
+    def check_request(self, request):
+        if request.hash_difficulty % request.difficulty != 0:
+            return False
     
     @node.rpcmethod
     def get_block(self, block_hash):
@@ -263,14 +262,14 @@ class UnDNSNode(node.Node):
                 previous_hash = None
                 pos = 0
                 timestamp = int(time.time())
-                message = {self.port: 1}
+                message = {self.port: 1} # XXX insert self.requests
                 difficulty = GENESIS_DIFFICULTY
                 total_difficulty = 0 + difficulty
             else:
                 previous_hash = previous_block.hash_id
                 pos = previous_block.pos + 1
                 timestamp = max(previous_block.timestamp, int(time.time()))
-                message = dict((int(k), int(v)) for k, v in previous_block.message.iteritems())
+                message = dict((int(k), int(v)) for k, v in previous_block.message.iteritems()) # XXX insert self.requests
                 message[self.port] = message.get(self.port, 0) + 1
             
                 if pos < 25:
@@ -480,7 +479,7 @@ for port in args.recursive_dns_ports:
 
 # RPC
 
-class RPCProtocol(basic.LineReceiver):
+class RPCProtocol(basic.LineOnlyReceiver):
     def lineReceived(self, line):
         method, args = json.loads(line)
         try:
@@ -503,6 +502,14 @@ class RPCProtocol(basic.LineReceiver):
                     break
                 cur = self.blocks[cur.previous_hash]
         return "{" + ', '.join("{%i, %i}" % x for x in res[::-1]) + "}"
+    
+    def rpc_register(self, name, contents):
+        a
+    
+    def rpc_update(self, name, contents):
+        a
+    # transfer, drop
+    # all need TTL
 rpc_factory = protocol.ServerFactory()
 rpc_factory.protocol = RPCProtocol
 for port in args.rpc_ports:
