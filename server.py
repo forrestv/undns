@@ -480,7 +480,6 @@ for port in args.recursive_dns_ports:
 
 # RPC
 
-
 class RPCProtocol(basic.LineReceiver):
     def lineReceived(self, line):
         method, args = json.loads(line)
@@ -489,8 +488,10 @@ class RPCProtocol(basic.LineReceiver):
         except Exception, e:
             res = json.dumps(str(e))
         self.sendLine(res)
+    
     def rpc_help(self):
         return "hi!"
+    
     def rpc_get_graph(self):
         self = n
         res = []
