@@ -1,7 +1,7 @@
 import random
 
 class CachingDictWrapper(object):
-    def __init__(self, inner, cache_size=100):
+    def __init__(self, inner, cache_size=10000):
         self._inner = inner
         self._cache = {}
         self._cache_size = cache_size
@@ -9,7 +9,7 @@ class CachingDictWrapper(object):
     def _add_to_cache(self, key, value):
         self._cache[key] = value
         if len(self._cache) > self._cache_size:
-            del self._cache[random.choice(self.cache.keys())]
+            del self._cache[random.choice(self._cache.keys())]
     
     def __len__(self):
         return len(self._inner)
@@ -18,6 +18,7 @@ class CachingDictWrapper(object):
         try:
             return self._cache[key]
         except KeyError:
+            print "cache failed for", key
             value = self._inner[key]
             self._add_to_cache(key, value)
             return value
@@ -28,7 +29,7 @@ class CachingDictWrapper(object):
     
     def __delitem__(self, key):
         del self._inner[key]
-        if key in self.cache:
+        if key in self._cache:
             del self._cache[key]
     
     def __contains__(self, key):
@@ -65,7 +66,7 @@ class SetDictWrapper(object):
         return iter(self._inner)
 
 class CachingSetWrapper(object):
-    def __init__(self, inner, cache_size=1000):
+    def __init__(self, inner, cache_size=10000):
         self._inner = inner
         self._cache = {}
         self._cache_size = cache_size
@@ -73,7 +74,7 @@ class CachingSetWrapper(object):
     def _add_to_cache(self, key, value):
         self._cache[key] = value
         if len(self._cache) > self._cache_size:
-            del self._cache[random.choice(self.cache.keys())]
+            del self._cache[random.choice(self._cache.keys())]
     
     def __len__(self):
         return len(self._inner)

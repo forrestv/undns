@@ -25,25 +25,45 @@ except ValueError:
     from Crypto.Hash import RIPEMD160 as ripemd160
 
 try:
-    _whirlpool = get('whrlpool')
+    whirlpool = get('whrlpool')
 except ValueError:
-    import mhash
-    # mhash is broken
-    class whirlpool(object):
-        def __init__(self, data=""):
-            self._data = data
-        def update(self, x):
-            self._data += x
-        def copy(self):
-            return whirlpool(self._data)
-        def digest(self):
-            return mhash.MHASH(mhash.MHASH_WHIRLPOOL, self._data).digest()
-        def hexdigest(self):
-            return self.digest().encode('hex')
+    try:
+        import mhash
+    except ImportError:
+        import whirlpool as _whirlpool
+        class whirlpool(object):
+            def __init__(self, data=""):
+                self._data = data
+            def update(self, x):
+                self._data += x
+            def copy(self):
+                return whirlpool(self._data)
+            def digest(self):
+                return _whirlpool.Whirlpool(self._data).digest()
+            def hexdigest(self):
+                return self.digest().encode('hex')
+    else:
+        # mhash is broken
+        class whirlpool(object):
+            def __init__(self, data=""):
+                self._data = data
+            def update(self, x):
+                self._data += x
+            def copy(self):
+                return whirlpool(self._data)
+            def digest(self):
+                return mhash.MHASH(mhash.MHASH_WHIRLPOOL, self._data).digest()
+            def hexdigest(self):
+                return self.digest().encode('hex')
 
-assert sha256("hello world").hexdigest() == "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
-assert ripemd160("hello world").hexdigest() == "98c615784ccb5fe5936fbc0cbe9dfdb408d92f0f"
-assert whirlpool("hello world").hexdigest() == "8d8309ca6af848095bcabaf9a53b1b6ce7f594c1434fd6e5177e7e5c20e76cd30936d8606e7f36acbef8978fea008e6400a975d51abe6ba4923178c7cf90c802"
+def test_hash(func, inp, out):
+    assert func(inp).hexdigest() == out, (func(inp).hexdigest(), out)
+    s = func(inp[:len(inp)//2])
+    s.update(inp[len(inp)//2:])
+    assert s.hexdigest() == out, (s.hexdigest(), out)
+test_hash(sha256, "hello world", "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9")
+test_hash(ripemd160, "hello world", "98c615784ccb5fe5936fbc0cbe9dfdb408d92f0f")
+test_hash(whirlpool, "hello world", "8d8309ca6af848095bcabaf9a53b1b6ce7f594c1434fd6e5177e7e5c20e76cd30936d8606e7f36acbef8978fea008e6400a975d51abe6ba4923178c7cf90c802")
 
 # encoding
 

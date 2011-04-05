@@ -72,8 +72,6 @@ def parse(x):
     return ip, int(port)
 knownNodes = map(parse, args.dht_nodes)
 
-#packets = [packet.Packet.from_binary(open(filename).read()) for filename in args.packet_filenames]
-
 # DHT
 
 dbFilename = '/tmp/undns%i.db' % (port,)
@@ -91,7 +89,11 @@ def median(x):
 def do_work(x, difficulty, stop_flag):
     d = "[%s, " % json.dumps(x)
     h = util.hash_difficulty(d)
+    count = 0
     for i in itertools.count(random.randrange(2**63)):
+        count += 1
+        if count > 1000:
+            return None
         if stop_flag[0]:
             return None
         d2 = "%i]" % i
@@ -122,6 +124,8 @@ class Block(object):
                 return result
             if stop_flag[0]:
                 return
+            if result is None:
+                return
             d.callback(cls(result))
         t.addBoth(f)
         return d
@@ -130,11 +134,15 @@ class Block(object):
         self.hash_difficulty = int(util.hash_difficulty(data).hexdigest(), 16)
         self.hash_id = hashlib.sha1(self.data).hexdigest()
         (self.previous_hash, self.pos, self.timestamp, self.total_difficulty, self.message, self.difficulty), self.nonce = json.loads(data)
+        if isinstance(self.previous_hash, unicode):
+            self.previous_hash = str(self.previous_hash)
 
 class BlockDictWrapper(object):
     # int -> Block : str -> str
     def __init__(self, inner):
         self._inner = inner
+    def __len__(self):
+        return len(self._inner)
     def __getitem__(self, key):
         block = Block(self._inner[key])
         if block.hash_id != key:
@@ -148,6 +156,8 @@ class BlockDictWrapper(object):
         self._inner[key] = value.data
     def __contains__(self, key):
         return key in self._inner
+    def __iter__(self):
+        return iter(self._inner)
 
 class UnDNSNode(node.Node):
     @property
@@ -157,15 +167,30 @@ class UnDNSNode(node.Node):
             for contact in bucket._contacts:
                 res.append(contact)
         return res
+    
     def __init__(self, *args, **kwargs):
         node.Node.__init__(self, *args, **kwargs)
         
-        self.blocks = db.CachingDictWrapper(BlockDictWrapper(bsddb.hashopen(db_prefix + '.blocks')))
-        self.verified = db.CachingSetWrapper(db.SetDictWrapper(bsddb.hashopen(db_prefix + '.verified')))
+        blocks_db = bsddb.hashopen(db_prefix + '.blocks2')
+        task.LoopingCall(blocks_db.sync).start(5)
+        self.blocks = db.CachingDictWrapper(BlockDictWrapper(blocks_db))
+        
+        verified_db = bsddb.hashopen(db_prefix + '.verified')
+        task.LoopingCall(verified_db.sync).start(5)
+        self.verified = db.CachingSetWrapper(db.SetDictWrapper(verified_db))
+        
         self.referrers = {} # hash -> list of hashes
+        self.requests_in_progress = set()
+        
+        #self.best_block = max(
+        #    itertools.chain(
+        #        [None],
+        #        (self.blocks[block_hash] for block_hash in self.blocks if block_hash in self.verified),
+        #    ),
+        #    key=lambda block: 0 if block is None else block.total_difficulty,
+        #)
         self.best_block = None
         self.best_block_callbacks = []
-        self.best_block = max((block for block in self.blocks if block.hash_id in self.verified), key=lambda block: block.total_difficulty)
     
     def joinNetwork(self, *args, **kwargs):
         node.Node.joinNetwork(self, *args, **kwargs)
@@ -173,12 +198,15 @@ class UnDNSNode(node.Node):
     
     def joined(self):
         self.push_task()
-        
         self.try_to_do_something()
     
     @defer.inlineCallbacks
     def push_task(self):
         while True:
+            def x(resp):
+                print resp
+            for peer in self.peers:
+                peer.ping().addCallback(x)
             #for packet in packets:
             #    print "publishing", packet.get_address()
             #    n.iterativeStore(packet.get_address_hash(), packet.to_binary())
@@ -226,11 +254,11 @@ class UnDNSNode(node.Node):
     def get_blocks(self, block_hash, n):
         result = []
         while True:
+            if block_hash in self.requests_in_progress:
+                break
             try:
                 block = self.blocks[block_hash]
             except KeyError:
-                break
-            if block is None:
                 break
             result.append(block.data)
             if len(result) >= n:
@@ -242,10 +270,7 @@ class UnDNSNode(node.Node):
     
     @node.rpcmethod
     def get_best_block_hash(self):
-        best_block_hash = None
-        if self.best_block is not None:
-            best_block_hash = self.best_block.hash_id
-        return defer.succeed(best_block_hash)
+        return None if self.best_block is None else self.best_block.hash_id
     
     @node.rpcmethod
     def get_time(self):
@@ -275,16 +300,18 @@ class UnDNSNode(node.Node):
                 if pos < 25:
                     difficulty = GENESIS_DIFFICULTY
                 else:
-                    difficulty_sum = 0
                     cur = previous_block
                     for i in xrange(LOOKBEHIND):
                         if cur.previous_hash is None:
                             break
-                        difficulty_sum += cur.difficulty
                         cur = self.blocks[cur.previous_hash]
                     
                     # want each block to take 10 seconds
-                    difficulty = difficulty_sum * 10 // (previous_block.timestamp - cur.timestamp)
+                    difficulty_sum = previous_block.total_difficulty - cur.total_difficulty
+                    dt = previous_block.timestamp - cur.timestamp
+                    if dt == 0:
+                        dt = 1
+                    difficulty = difficulty_sum * 10 // dt
                 
                 total_difficulty = previous_block.total_difficulty + difficulty
             
@@ -300,10 +327,14 @@ class UnDNSNode(node.Node):
             except defer.CancelledError:
                 self.say("cancelled")
                 continue # we aborted because of a new longest chain
+            if result is None:
+                continue
             
             self.say("generated", result.pos, result.message, result.difficulty, self.received_block(result))
     
     def received_block(self, block, from_node=None, depth=0):
+      try:
+        print block.data
         if block.hash_id in self.verified:
             return "already verified"
         
@@ -338,28 +369,37 @@ class UnDNSNode(node.Node):
             
             b = block
             while True:
+                print 1
                 assert b.previous_hash is not None, b.__dict__
                 if b.previous_hash not in self.blocks:
+                    print .5
                     if from_node is None:
                         if not self.peers:
+                            print 2
                             return
                         from_node = random.choice(self.peers)
                     def got_block(datas):
                         print datas
-                        self.blocks.pop(b.previous_hash)
+                        self.requests_in_progress.remove(b.previous_hash)
                         for data in reversed(datas):
                             block2 = Block(data)
-                            self.received_block(block2, from_node)
+                            try:
+                                self.received_block(block2, from_node)
+                            except:
+                                traceback.print_exc()
                     def got_error(fail):
                         print fail
-                        self.blocks.pop(b.previous_hash)
-                    self.blocks[b.previous_hash] = None
-                    print "requesting block before", b.pos
+                        self.requests_in_progress.remove(b.previous_hash)
+                    if b.previous_hash in self.requests_in_progress:
+                        print 3
+                        print "not requesting!", block.pos
+                        return "waiting on other request ..."
+                    print 4
+                    print "requesting", b.previous_hash
+                    self.requests_in_progress.add(b.previous_hash)
                     from_node.get_blocks(b.previous_hash, 20).addCallbacks(got_block, got_error)
                     return "waiting on block.."
                 b = self.blocks[b.previous_hash]
-                if b is None:
-                    return # in progress
         else:
             previous_block = self.blocks[block.previous_hash]
             
@@ -393,6 +433,8 @@ class UnDNSNode(node.Node):
             self.referrers.setdefault(block.previous_hash, set()).add(block.hash_id)
             self.say("i_received", block.pos, block.difficulty, block.timestamp, block.message)
             self.verified_block(block, depth=depth + 1)
+      except:
+        traceback.print_exc()
     
     def verified_block(self, block, from_node=None, depth=0):
         assert block.previous_hash is None or block.previous_hash in self.verified
@@ -423,6 +465,9 @@ class UnDNSNode(node.Node):
             self.best_block_callbacks = []
             for cb in cbs:
                 cb()
+    
+    def __del__(self):
+        print "DELETED"
 
 n = UnDNSNode(udpPort=port, dataStore=dataStore)
 n.joinNetwork(knownNodes)
@@ -503,13 +548,20 @@ class RPCProtocol(basic.LineOnlyReceiver):
                 cur = self.blocks[cur.previous_hash]
         return "{" + ', '.join("{%i, %i}" % x for x in res[::-1]) + "}"
     
-    def rpc_register(self, name, contents):
+    def rpc_register(self, name, contents, ttl):
+        # update time and expiry time are different
         a
     
-    def rpc_update(self, name, contents):
+    def rpc_update(self, name, contents, ttl):
         a
-    # transfer, drop
-    # all need TTL
+    
+    def rpc_transfer(self, name, dest):
+        # change key, contents remain
+        a
+    
+    def rpc_drop(self, name):
+        a
+
 rpc_factory = protocol.ServerFactory()
 rpc_factory.protocol = RPCProtocol
 for port in args.rpc_ports:
