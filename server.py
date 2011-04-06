@@ -136,9 +136,13 @@ class Block(object):
         (self.previous_hash, self.pos, self.timestamp, self.total_difficulty, self.message, self.difficulty), self.nonce = json.loads(data)
         if isinstance(self.previous_hash, unicode):
             self.previous_hash = str(self.previous_hash)
+    def is_valid(self):
+        if self.previous_hash is None:
+            a
+        else:
+            a
 
 class BlockDictWrapper(object):
-    # int -> Block : str -> str
     def __init__(self, inner):
         self._inner = inner
     def __len__(self):
@@ -191,6 +195,11 @@ class UnDNSNode(node.Node):
         #)
         self.best_block = None
         self.best_block_callbacks = []
+        
+        try:
+            self.best_block = self.blocks[open(db_prefix + '.best').read()]
+        except:
+            traceback.print_exc()
     
     def joinNetwork(self, *args, **kwargs):
         node.Node.joinNetwork(self, *args, **kwargs)
@@ -286,17 +295,17 @@ class UnDNSNode(node.Node):
             if previous_block is None:
                 previous_hash = None
                 pos = 0
-                timestamp = int(time.time())
+                timestamp = int(time.time()*1000)
                 message = {self.port: 1} # XXX insert self.requests
                 difficulty = GENESIS_DIFFICULTY
                 total_difficulty = 0 + difficulty
             else:
                 previous_hash = previous_block.hash_id
                 pos = previous_block.pos + 1
-                timestamp = max(previous_block.timestamp, int(time.time()))
+                timestamp = max(previous_block.timestamp, int(time.time()*1000))
                 message = dict((int(k), int(v)) for k, v in previous_block.message.iteritems()) # XXX insert self.requests
                 message[self.port] = message.get(self.port, 0) + 1
-            
+                
                 if pos < 25:
                     difficulty = GENESIS_DIFFICULTY
                 else:
@@ -311,7 +320,7 @@ class UnDNSNode(node.Node):
                     dt = previous_block.timestamp - cur.timestamp
                     if dt == 0:
                         dt = 1
-                    difficulty = difficulty_sum * 10 // dt
+                    difficulty = difficulty_sum * 10000 // dt
                 
                 total_difficulty = previous_block.total_difficulty + difficulty
             
@@ -333,108 +342,112 @@ class UnDNSNode(node.Node):
             self.say("generated", result.pos, result.message, result.difficulty, self.received_block(result))
     
     def received_block(self, block, from_node=None, depth=0):
-      try:
-        print block.data
-        if block.hash_id in self.verified:
-            return "already verified"
-        
-        if block.hash_difficulty % block.difficulty != 0:
-            return "invalid nonce"
-        
-        if block.timestamp > time.time() + 60 * 10:
-            return "block is from the future!"
-        
-        # this needs to change ... it should compare against all blocks, not the best verified block
-        #if self.best_block is not None and block.pos < self.best_block.pos - 16:
-        #    return "you lose"
-        
-        if block.pos == 0:
-            if block.previous_hash is not None:
-                return "genesis block can't refer to previous..."
+        try:
+            print block.data
+            if block.hash_id in self.verified:
+                return "already verified"
             
-            if block.difficulty != GENESIS_DIFFICULTY:
-                return "genesis difficulty"
+            if block.hash_difficulty % block.difficulty != 0:
+                return "invalid nonce"
             
-            if block.total_difficulty != block.difficulty:
-                return "genesis total_difficulty"
+            if block.timestamp > (time.time() + 60 * 10) * 1000:
+                return "block is from the future!"
             
-            self.blocks[block.hash_id] = block
-            self.referrers.setdefault(block.previous_hash, set()).add(block.hash_id)
-            self.say("g_received", block.pos, block.message)
-            self.verified_block(block, from_node, depth=depth + 1)
-        elif block.previous_hash not in self.verified:
-            self.blocks[block.hash_id] = block
-            self.referrers.setdefault(block.previous_hash, set()).add(block.hash_id)
-            self.say("h_received", block.pos, block.message)
+            # this needs to change ... it should compare against all blocks, not the best verified block
+            #if self.best_block is not None and block.pos < self.best_block.pos - 16:
+            #    return "you lose"
             
-            b = block
-            while True:
-                print 1
-                assert b.previous_hash is not None, b.__dict__
-                if b.previous_hash not in self.blocks:
-                    print .5
-                    if from_node is None:
-                        if not self.peers:
-                            print 2
-                            return
-                        from_node = random.choice(self.peers)
-                    def got_block(datas):
-                        print datas
-                        self.requests_in_progress.remove(b.previous_hash)
-                        for data in reversed(datas):
-                            block2 = Block(data)
-                            try:
-                                self.received_block(block2, from_node)
-                            except:
-                                traceback.print_exc()
-                    def got_error(fail):
-                        print fail
-                        self.requests_in_progress.remove(b.previous_hash)
-                    if b.previous_hash in self.requests_in_progress:
-                        print 3
-                        print "not requesting!", block.pos
-                        return "waiting on other request ..."
-                    print 4
-                    print "requesting", b.previous_hash
-                    self.requests_in_progress.add(b.previous_hash)
-                    from_node.get_blocks(b.previous_hash, 20).addCallbacks(got_block, got_error)
-                    return "waiting on block.."
-                b = self.blocks[b.previous_hash]
-        else:
-            previous_block = self.blocks[block.previous_hash]
-            
-            if block.pos != previous_block.pos + 1:
-                return "pos needs to advance by 1"
-            
-            if block.timestamp < previous_block.timestamp:
-                return "timestamp must not decrease"
-            
-            if block.total_difficulty != previous_block.total_difficulty + block.difficulty:
-                return "genesis total_difficulty"
-            
-            if block.pos < 25:
-                difficulty = GENESIS_DIFFICULTY
-            else:
-                difficulty_sum = 0
-                cur = previous_block
-                for i in xrange(LOOKBEHIND):
-                    if cur.previous_hash is None:
-                        break
-                    difficulty_sum += cur.difficulty
-                    cur = self.blocks[cur.previous_hash]
+            if block.previous_hash  is None:
+                if block.pos != 0:
+                    return "not first"
                 
-                # want each block to take 10 seconds
-                difficulty = difficulty_sum * 10 // (previous_block.timestamp - cur.timestamp)
-            
-            if block.difficulty != difficulty:
-                return "difficulty must follow pattern (%i != %i)" % (block.difficulty, difficulty)
-            
-            self.blocks[block.hash_id] = block
-            self.referrers.setdefault(block.previous_hash, set()).add(block.hash_id)
-            self.say("i_received", block.pos, block.difficulty, block.timestamp, block.message)
-            self.verified_block(block, depth=depth + 1)
-      except:
-        traceback.print_exc()
+                if block.difficulty != GENESIS_DIFFICULTY:
+                    return "genesis difficulty"
+                
+                if block.total_difficulty != block.difficulty:
+                    return "genesis total_difficulty"
+                
+                self.blocks[block.hash_id] = block
+                self.referrers.setdefault(block.previous_hash, set()).add(block.hash_id)
+                self.say("g_received", block.pos, block.message)
+                self.verified_block(block, from_node, depth=depth + 1)
+                return
+            if block.previous_hash not in self.verified:
+                self.blocks[block.hash_id] = block
+                self.referrers.setdefault(block.previous_hash, set()).add(block.hash_id)
+                self.say("h_received", block.pos, block.message)
+                
+                b = block
+                while True:
+                    print 1
+                    assert b.previous_hash is not None, b.__dict__
+                    if b.previous_hash not in self.blocks:
+                        print .5
+                        if from_node is None:
+                            if not self.peers:
+                                print 2
+                                return
+                            from_node = random.choice(self.peers)
+                        def got_block(datas):
+                            print datas
+                            self.requests_in_progress.remove(b.previous_hash)
+                            for data in reversed(datas):
+                                block2 = Block(data)
+                                try:
+                                    self.received_block(block2, from_node)
+                                except:
+                                    traceback.print_exc()
+                        def got_error(fail):
+                            print fail
+                            self.requests_in_progress.remove(b.previous_hash)
+                        if b.previous_hash in self.requests_in_progress:
+                            print 3
+                            print "not requesting!", block.pos
+                            return "waiting on other request ..."
+                        print 4
+                        print "requesting", b.previous_hash
+                        self.requests_in_progress.add(b.previous_hash)
+                        from_node.get_blocks(b.previous_hash, 100).addCallbacks(got_block, got_error)
+                        return "waiting on block.."
+                    b = self.blocks[b.previous_hash]
+                return
+            else:
+                previous_block = self.blocks[block.previous_hash]
+                
+                if block.pos != previous_block.pos + 1:
+                    return "pos needs to advance by 1"
+                
+                if block.timestamp < previous_block.timestamp:
+                    return "timestamp must not decrease"
+                
+                if block.total_difficulty != previous_block.total_difficulty + block.difficulty:
+                    return "genesis total_difficulty"
+                
+                if block.pos < 25:
+                    difficulty = GENESIS_DIFFICULTY
+                else:
+                    cur = self.blocks[block.previous_hash]
+                    for i in xrange(LOOKBEHIND):
+                        if cur.previous_hash is None:
+                            break
+                        cur = self.blocks[cur.previous_hash]
+                    
+                    # want each block to take 10 seconds
+                    difficulty_sum = previous_block.total_difficulty - cur.total_difficulty
+                    dt = previous_block.timestamp - cur.timestamp
+                    if dt == 0:
+                        dt = 1
+                    difficulty = difficulty_sum * 10000 // dt
+                
+                if block.difficulty != difficulty:
+                    return "difficulty must follow pattern (%i != %i)" % (block.difficulty, difficulty)
+                
+                self.blocks[block.hash_id] = block
+                self.referrers.setdefault(block.previous_hash, set()).add(block.hash_id)
+                self.say("i_received", block.pos, block.difficulty, block.timestamp, block.message)
+                self.verified_block(block, depth=depth + 1)
+        except:
+            traceback.print_exc()
     
     def verified_block(self, block, from_node=None, depth=0):
         assert block.previous_hash is None or block.previous_hash in self.verified
@@ -461,10 +474,37 @@ class UnDNSNode(node.Node):
             self.say("new best", block.pos, block.message)
             self.best_block = block
             
+            open(db_prefix + '.best', 'w').write(self.best_block.hash_id)
+            self.blocks._inner._inner.sync()
+            
             cbs = self.best_block_callbacks
             self.best_block_callbacks = []
             for cb in cbs:
                 cb()
+    
+    def try_to_verify(self, block):
+        assert block.hash_id in self.blocks
+        
+        if block.previous_hash is None:
+            if block.pos != 0:
+                return "only first block doesn't need a reference"
+            
+            if block.difficulty != GENESIS_DIFFICULTY:
+                return "genesis difficulty"
+            
+            if block.total_difficulty != block.difficulty:
+                return "genesis total_difficulty"
+            
+            self.blocks[block.hash_id] = block
+            self.referrers.setdefault(block.previous_hash, set()).add(block.hash_id)
+            self.say("g_received", block.pos, block.message)
+            self.verified_block(block, from_node, depth=depth + 1)
+            a
+        else:
+            if block.pos <= 0:
+                return "invalid position"
+            
+            a
     
     def __del__(self):
         print "DELETED"
