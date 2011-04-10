@@ -3,13 +3,11 @@ import hashlib
 import zlib
 
 from Crypto.PublicKey import RSA
-import twisted.names.common, twisted.names.client, twisted.names.dns, twisted.names.server, twisted.names.error, twisted.names.authority
-del twisted
-from twisted import names
+from twisted.names import authority
 
 import util
 
-class BindStringAuthority(names.authority.BindAuthority):
+class BindStringAuthority(authority.BindAuthority):
     def __init__(self, contents, origin):
         names.common.ResolverBase.__init__(self)
         self.origin = origin
@@ -19,47 +17,9 @@ class BindStringAuthority(names.authority.BindAuthority):
         self.parseLines(lines)
         self._cache = {}
 
-class Packet(object):
-    @classmethod
-    def from_binary(cls, x, address=None, address_hash=None):
-        d = json.loads(zlib.decompress(x))
-        return cls(util.tuple_to_key(d['public_key']), d['zone_file'], d['signature'], address, address_hash)
+class DomainKey(object):
+    "All that is needed to control a domain"
     
-    def __init__(self, public_key, zone_file, signature, address=None, address_hash=None):
-        if public_key.has_private():
-            raise ValueError("key not public")
-        if not public_key.verify(hashlib.sha1(zone_file).digest(), signature):
-            raise ValueError("signature invalid")
-        
-        self._public_key = public_key
-        self._zone_file = zone_file
-        self._signature = signature
-        
-        self._address = util.key_to_address(self._public_key)
-        self._address_hash = hashlib.sha1(self._address).digest()
-        self._zone = BindStringAuthority(self._zone_file.encode('utf8'), self._address + '.')
-        
-        if address is not None and self.get_address() != address:
-            raise ValueError("address not correct")
-        if address_hash is not None and self.get_address_hash() != address_hash:
-            raise ValueError("address hash not correct")
-    
-    def to_binary(self):
-        return zlib.compress(json.dumps(dict(public_key=util.key_to_tuple(self._public_key), zone_file=self._zone_file, signature=self._signature)))
-    
-    def get_address(self):
-        return self._address
-    
-    def get_address_hash(self):
-        return self._address_hash
-    
-    def get_zone_file(self):
-        return self._zone_file
-    
-    def get_zone(self):
-        return self._zone
-
-class PrivateKey(object):
     @classmethod
     def generate(cls, rng):
         return cls(RSA.generate(1024, rng))
@@ -80,55 +40,81 @@ class PrivateKey(object):
     def get_address(self):
         return util.key_to_address(self._private_key.publickey())
     
-    def encode(self, zone_file, rng):
-        return Packet(self._private_key.publickey(), zone_file, self._private_key.sign(hashlib.sha1(zone_file).digest(), rng))
+    def encode(self, record, rng):
+        return DomainPacket(self._private_key.publickey(), record, self._private_key.sign(record.get_hash(), rng))
 
-class TheirIdentity(object):
+class DomainPacket(object):
+    "All that is needed to securely convey a DomainRecord"
+    
     @classmethod
     def from_binary(cls, x):
-        return cls(util.tuple_to_key(json.loads(zlib.decompress(x))))
+        d = json.loads(zlib.decompress(x))
+        return cls(util.tuple_to_key(d['public_key']), DomainRecord.from_obj(d['record']), d['signature'])
     
-    def __init__(self, public_key):
+    def __init__(self, public_key, record, signature):
         if public_key.has_private():
             raise ValueError("key not public")
         
         self._public_key = public_key
-    
-    def to_binary(self):
-        return zlib.compress(json.dumps(util.key_to_tuple(self._public_key)))
-    
-    def get_id(self):
-        return util.hash_address(util.key_to_string(self._public_key))
-    
-    def verify(self, data, signature):
-        return self._public_key.verify(util.hash_sign(data), signature)
-
-class MyIdentity(object):
-    @classmethod
-    def generate(cls, rng):
-        return cls(RSA.generate(1024, rng))
-    
-    @classmethod
-    def from_binary(cls, x):
-        return cls(util.tuple_to_key(json.loads(zlib.decompress(x))))
-    
-    def __init__(self, private_key):
-        if not private_key.has_private():
-            raise ValueError("key not private")
+        self._record = record
+        self._signature = signature
         
-        self._private_key = private_key
+        self._address = util.key_to_address(self._public_key)
+        self._address_hash = util.hash_address_hash(self._address).digest()
+        self._zone = None
     
     def to_binary(self):
-        return zlib.compress(json.dumps(util.key_to_tuple(self._private_key)))
+        return zlib.compress(json.dumps(dict(public_key=util.key_to_tuple(self._public_key), record=self._record.to_obj(), signature=self._signature)))
     
-    def get_id(self):
-        return util.hash_address(util.key_to_string(self._private_key.publickey()))
+    def verify_signature(self):
+        return public_key.verify(self._record.get_hash(), signature)
     
-    def to_binary_public(self):
-        return zlib.compress(json.dumps(util.key_to_tuple(self._private_key.publickey())))
+    def get_address(self):
+        return self._address
     
-    def sign(self, data, rng):
-        return self._private_key.sign(util.hash_sign(data), rng)
+    def get_address_hash(self):
+        return self._address_hash
+    
+    def get_record(self):
+        return self._record
+
+class DomainRecord(object):
+    "Information about a domain"
+    
+    @classmethod
+    def from_obj(cls, (zone_file, start_time, end_time)):
+        return cls(zone_file, start_time, end_time)
+    
+    def __init__(self, zone_file, start_time, end_time):
+        assert isinstance(zone_file, unicode)
+        assert isinstance(start_time, (int, long))
+        assert isinstance(end_time, (int, long))
+        
+        self._zone_file = zone_file
+        self._start_file = start_time
+        self._end_time = end_time
+    
+    def to_obj(self):
+        return (self._zone_file, self._start_time, self._end_time)
+    
+    def to_binary(self):
+        return json.dumps(dict(zone_file=self._zone_file, start_time=self._start_time, end_time=self._end_time))
+    
+    def get_zone_file(self):
+        return self._zone_file
+    
+    def get_zone(self, address):
+        assert not address.endswith('.')
+        return BindStringAuthority(self._zone_file.encode('utf8'), address + '.')
+    
+    def get_start_time(self):
+        return self._start_time
+    
+    def get_end_time(self):
+        return self._end_time
+    
+    def get_hash(self):
+        return util.hash_sign(self.to_binary()).digest()
 
 if __name__ == '__main__':
     from Crypto import Random

@@ -1,4 +1,7 @@
+import bsddb
 import random
+import atexit
+import weakref
 
 class CachingDictWrapper(object):
     def __init__(self, inner, cache_size=10000):
@@ -95,3 +98,33 @@ class CachingSetWrapper(object):
     
     def __iter__(self):
         return iter(self._inner)
+
+class ValueDictWrapper(object):
+    def __init__(self, inner):
+        self._inner = inner
+    def __len__(self):
+        return len(self._inner)
+    def __getitem__(self, key):
+        return self._decode(key, self._inner[key])
+    def __setitem__(self, key, value):
+        self._inner[key] = self._encode(key, value)
+    def __contains__(self, key):
+        return key in self._inner
+    def __iter__(self):
+        return iter(self._inner)
+    def keys(self):
+        return self._inner.keys()
+    def iteritems(self):
+        for k, v in self._inner.iteritems():
+            yield k, self._decode(k, v)
+
+def try_sync(db_weakref):
+    db = db_weakref()
+    if db is None:
+        return
+    db.sync()
+
+def safe_open_db(filename):
+    db = bsddb.hashopen(filename)
+    atexit.register(try_sync, weakref.ref(db))
+    return db

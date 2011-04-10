@@ -149,17 +149,6 @@ def make_hash_class(funcs, interleave):
     hash_class.digest_size = len(hash_class().digest())
     return hash_class
 
-# for block difficulty checking
-# not limited
-# if this is broken, people have an advantage in generating blocks, possibly compromising the network
-# interleaving the bits of two hash algorithms prevents breaking of one algorithm from resulting in more than a 2x speed gain
-hash_difficulty = make_hash_class([whirlpool, sha256], interleave=True)
-
-# for block references
-# limited by storage space for chain
-# if this is broken, people can change the history of the block chain
-hash_block = make_hash_class([ripemd160, sha256], interleave=False)
-
 # for signing
 # if this is broken, people can forge DHT node IDs and gain control over randomly-generated addresses by generating messages that fit a past signature
 hash_sign = make_hash_class([whirlpool, ripemd160, sha256], interleave=False)
