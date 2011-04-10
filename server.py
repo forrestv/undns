@@ -6,8 +6,6 @@ import os
 import sys
 import random
 import hashlib
-import argparse
-import subprocess
 import traceback
 import json
 import itertools
@@ -28,57 +26,9 @@ import packet
 import util
 import db
 
-try:
-    __version__ = subprocess.Popen(["svnversion", os.path.dirname(sys.argv[0])], stdout=subprocess.PIPE).stdout.read().strip()
-except IOError:
-    __version__ = "unknown"
-
-name = "UnDNS server (version %s)" % (__version__,)
-
-parser = argparse.ArgumentParser(description=name)
-parser.add_argument('--version', action='version', version=__version__)
-parser.add_argument("-a", "--authoritative-dns", metavar="PORT",
-    help="run a TCP+UDP authoritative dns server on PORT; you likely don't want this - this is for _the_ public nameserver",
-    type=int, action="append", default=[], dest="authoritative_dns_ports")
-parser.add_argument("-r", "--recursive-dns", metavar="PORT",
-    help="run a TCP+UDP recursive dns server on PORT; you likely do want this - this is for clients",
-    type=int, action="append", default=[], dest="recursive_dns_ports")
-parser.add_argument("-d", "--dht-port", metavar="PORT",
-    help="use UDP port PORT to connect to other DHT nodes and listen for connections (if not specified a random high port is chosen)",
-    type=int, action="store", default=random.randrange(49152, 65536), dest="dht_port")
-parser.add_argument("-n", "--node", metavar="ADDR:PORT",
-    help="connect to existing DHT node at ADDR listening on UDP port PORT",
-    action="append", default=[], dest="dht_nodes")
-parser.add_argument("-l", "--listen", metavar="PORT",
-    help="listen on PORT for RPC connections to manage server",
-    type=int, action="append", default=[], dest="rpc_ports")
-
-config_default = os.path.join(os.path.expanduser('~'), '.undns')
-parser.add_argument("-c", "--config", metavar="PATH",
-    help="use configuration database at PATH (default: %s)" % (config_default,),
-    action="store", default=config_default, dest="config")
-args = parser.parse_args()
-
-print name
-
-port = args.dht_port
-print "PORT:", port
-
-db_prefix = args.config
-
-def parse(x):
-    if ':' not in x:
-        return ('127.0.0.1', int(x))
-    ip, port = x.split(':')
-    return ip, int(port)
-knownNodes = map(parse, args.dht_nodes)
 
 # DHT
 
-dbFilename = '/tmp/undns%i.db' % (port,)
-if os.path.isfile(dbFilename):
-    os.remove(dbFilename)
-dataStore = datastore.SQLiteDataStore(dbFile=dbFilename)
 
 def median(x):
     # don't really need a complex algorithm here
@@ -117,10 +67,15 @@ class UnDNSNode(node.Node):
                 res.append(contact)
         return res
     
-    def __init__(self, *args, **kwargs):
-        node.Node.__init__(self, *args, **kwargs)
-        self.domains = DomainKeyDictWrapper(db.safe_open_db(db_prefix + '.domains'))
-        self.entries = JSONWrapper(db.safe_open_db(db_prefix + '.entries'))
+    def __init__(self, rng, *args, **kwargs):
+        self.rng = rng
+        dbFilename = '/tmp/undns%i.db' % (port,)
+        if os.path.isfile(dbFilename):
+            os.remove(dbFilename)
+        dataStore = datastore.SQLiteDataStore(dbFile=dbFilename)
+        node.Node.__init__(self, *args, dataStore=dataStore, **kwargs)
+        self.domains = db.CachingDictWrapper(DomainKeyDictWrapper(db.safe_open_db(db_prefix + '.domains')))
+        self.entries = db.CachingDictWrapper(JSONWrapper(db.safe_open_db(db_prefix + '.entries')))
         self.clock_deltas = {} # contact -> (time, offset)
         self.clock_offset = 0
     
@@ -173,7 +128,7 @@ class UnDNSNode(node.Node):
             return
         t = self.get_my_time()
         record = packet.DomainRecord(zone_file, int(t - 5), int(math.ceil(t + ttl + 5)))
-        pkt = key.encode(record)
+        pkt = key.encode(record, self.rng)
         n.iterativeStore(packet.get_address_hash(), pkt.to_binary())
     
     @node.rpcmethod
@@ -194,16 +149,14 @@ class UnDNSNode(node.Node):
     @node.rpcmethod
     def get_time(self):
         return time.time()
+    
+    @defer.inlineCallbacks
+    def get_zone(self, address):
+        a
 
-n = UnDNSNode(udpPort=port, dataStore=dataStore)
-n.joinNetwork(knownNodes)
+class UnDNS(object):
+    def __init__(self, dht_port): pass
 
-print "ID:", n.id.encode('hex')
-
-def print_loop():
-    n.printContacts()
-    reactor.callLater(10.5984312, print_loop)
-print_loop()
 
 # DNS
 
@@ -228,6 +181,7 @@ class UnDNSResolver(names.common.ResolverBase):
                 return defer.fail(failure.Failure(names.dns.AuthoritativeDomainError(name)))
             
             assert isinstance(result, dict), result
+            print result.keys()
             packet = packet.Packet.from_binary(result[name_hash])
             
             if packet.get_address() != name_alone:
@@ -236,60 +190,41 @@ class UnDNSResolver(names.common.ResolverBase):
             return packet.get_zone()._lookup(name, cls, type, timeout)
         return self.dht.iterativeFindValue(name_hash).addCallback(callback)
 
-resolver = UnDNSResolver(n)
-
-authoritative_dns = names.server.DNSServerFactory(authorities=[resolver])
-for port in args.authoritative_dns_ports:
-    reactor.listenTCP(port, authoritative_dns)
-    reactor.listenUDP(port, names.dns.DNSDatagramProtocol(authoritative_dns))
-
-recursive_dns = names.server.DNSServerFactory(authorities=[resolver], clients=[names.client.createResolver()])
-for port in args.recursive_dns_ports:
-    reactor.listenTCP(port, recursive_dns)
-    reactor.listenUDP(port, names.dns.DNSDatagramProtocol(recursive_dns))
-
 # RPC
 
 class RPCProtocol(basic.LineOnlyReceiver):
+    def __init__(self, node, rng):
+        self.node = node
+        self.rng = rng
+    
     def lineReceived(self, line):
         method, args = json.loads(line)
         try:
             res = json.dumps(getattr(self, "rpc_" + method)(*args))
         except Exception, e:
+            traceback.print_exc()
             res = json.dumps(str(e))
         self.sendLine(res)
     
-    def rpc_help(self):
-        return "hi!"
-    
     def rpc_list_domains(self):
-        return n.domains.keys()
+        return self.node.domains.keys()
     
     def rpc_register(self):
-        domain_key = packet.PrivateKey.generate(rng)
+        domain_key = packet.DomainKey.generate(self.rng)
         addr = domain_key.get_address()
-        n.domains[addr] = domain_key
+        self.node.domains[addr] = domain_key
         return addr
     
     def rpc_update(self, addr, contents, ttl):
-        if addr not in n.domains:
+        if addr not in self.node.domains:
             return "don't have key"
-        n.entries[addr] = (contents, ttl)
-        n.push_addr(addr, contents, ttl)
+        self.node.entries[addr] = (contents, ttl)
+        self.node.push_addr(addr, contents, ttl)
     
     def rpc_get(self, addr):
-        return n.entries[addr]
+        return self.node.entries[addr]
     
     def rpc_drop(self, addr):
-        del n.domains[addr]
-        if addr in n.entries:
-            del n.entries[addr]
-
-rpc_factory = protocol.ServerFactory()
-rpc_factory.protocol = RPCProtocol
-for port in args.rpc_ports:
-    reactor.listenTCP(port, rpc_factory)
-
-# global
-
-reactor.run()
+        del self.node.domains[addr]
+        if addr in self.node.entries:
+            del self.node.entries[addr]

@@ -54,6 +54,8 @@ class DomainPacket(object):
     def __init__(self, public_key, record, signature):
         if public_key.has_private():
             raise ValueError("key not public")
+        assert isinstance(record, DomainRecord)
+        assert isinstance(signature, tuple)
         
         self._public_key = public_key
         self._record = record
