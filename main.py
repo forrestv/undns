@@ -4,6 +4,12 @@ import argparse
 import random
 import sys
 
+import twisted.names.common, twisted.names.client, twisted.names.dns, twisted.names.server, twisted.names.error, twisted.names.authority
+del twisted
+from twisted import names
+from twisted.internet import protocol, reactor
+from Crypto import Random
+
 import server
 
 try:
@@ -38,12 +44,9 @@ parser.add_argument("-c", "--config", metavar="PATH",
 
 args = parser.parse_args()
 
-print name
+rng = Random.new().read
 
-port = args.dht_port
-print "PORT:", port
-
-db_prefix = args.config
+print name, "on port", args.dht_port
 
 def parse(x):
     if ':' not in x:
@@ -52,15 +55,15 @@ def parse(x):
     return ip, int(port)
 knownNodes = map(parse, args.dht_nodes)
 
-n = UnDNSNode(udpPort=port, dataStore=dataStore)
+n = server.UnDNSNode(udpPort=args.dht_port, db_prefix=args.config, rng=rng)
 n.joinNetwork(knownNodes)
 
 rpc_factory = protocol.ServerFactory()
-rpc_factory.protocol = RPCProtocol
+rpc_factory.protocol = server.RPCProtocol
 for port in args.rpc_ports:
     reactor.listenTCP(port, rpc_factory)
 
-resolver = UnDNSResolver(n)
+resolver = server.UnDNSResolver(n)
 
 authoritative_dns = names.server.DNSServerFactory(authorities=[resolver])
 for port in args.authoritative_dns_ports:

@@ -67,13 +67,13 @@ class UnDNSNode(node.Node):
                 res.append(contact)
         return res
     
-    def __init__(self, rng, *args, **kwargs):
+    def __init__(self, rng, db_prefix, udpPort):
         self.rng = rng
-        dbFilename = '/tmp/undns%i.db' % (port,)
+        dbFilename = '/tmp/undns%i.db' % (udpPort,)
         if os.path.isfile(dbFilename):
             os.remove(dbFilename)
         dataStore = datastore.SQLiteDataStore(dbFile=dbFilename)
-        node.Node.__init__(self, *args, dataStore=dataStore, **kwargs)
+        node.Node.__init__(self, udpPort=udpPort, dataStore=dataStore)
         self.domains = db.CachingDictWrapper(DomainKeyDictWrapper(db.safe_open_db(db_prefix + '.domains')))
         self.entries = db.CachingDictWrapper(JSONWrapper(db.safe_open_db(db_prefix + '.entries')))
         self.clock_deltas = {} # contact -> (time, offset)
@@ -101,7 +101,7 @@ class UnDNSNode(node.Node):
                 try:
                     t_recv, response = yield request
                     t = .5 * (t_send + t_recv)
-                    self.clock_deltas[(peer.id, peer.address)] = (t, float(response))
+                    self.clock_deltas[(peer.id, peer.address, peer.port)] = (t, float(response))
                 except:
                     traceback.print_exc()
                     continue
