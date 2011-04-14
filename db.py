@@ -1,7 +1,48 @@
-import bsddb
 import random
-import atexit
-import weakref
+import sqlite3
+
+class SQLiteDict(object):
+    def __init__(self, db, table):
+        self._db = db
+        self._table = table
+        
+        self._db.execute('CREATE TABLE IF NOT EXISTS %s(key BLOB PRIMARY KEY NOT NULL, value BLOB NOT NULL)' % (self._table,))
+
+    def __iter__(self):
+        for row in self._db.execute("SELECT key FROM %s" % (self._table,)):
+            yield str(row[0])
+    def iterkeys(self):
+        return iter(self)
+    def keys(self):
+        return list(self)
+    
+    def itervalues(self):
+        for row in self._db.execute("SELECT value FROM %s" % (self._table,)):
+            yield str(row[0])
+    def values(self):
+        return list(self.itervalues)
+    
+    def iteritems(self):
+        for row in self._db.execute("SELECT key, value FROM %s" % (self._table,)):
+            yield (str(row[0]), str(row[1]))
+    def items(self):
+        return list(self.iteritems())
+    
+    def __setitem__(self, key, value):
+        if self._db.execute("SELECT key FROM %s where key=?" % (self._table,), (buffer(key),)).fetchone() is None:
+            self._db.execute('INSERT INTO %s(key, value) VALUES (?, ?)' % (self._table,), (buffer(key), buffer(value)))
+        else:
+            self._db.execute('UPDATE %s SET value=? WHERE key=?' % (self._table,), (buffer(value), buffer(key)))
+    
+    def __getitem__(self, key):
+        row = self._db.execute('SELECT value FROM %s WHERE key=?' % (self._table,), (buffer(key),)).fetchone()
+        if row is None:
+            raise KeyError(key)
+        else:
+            return str(row[0])
+    
+    def __delitem__(self, key):
+        self._db.execute("DELETE FROM %s WHERE key=?" % (self._table,), (buffer(key),))
 
 class CachingDictWrapper(object):
     def __init__(self, inner, cache_size=10000):
@@ -21,7 +62,7 @@ class CachingDictWrapper(object):
         try:
             return self._cache[key]
         except KeyError:
-            print "cache failed for", key
+            print "cache failed for", repr(key)
             value = self._inner[key]
             self._add_to_cache(key, value)
             return value
@@ -108,6 +149,8 @@ class ValueDictWrapper(object):
         return self._decode(key, self._inner[key])
     def __setitem__(self, key, value):
         self._inner[key] = self._encode(key, value)
+    def __delitem__(self, key):
+        del self._inner[key]
     def __contains__(self, key):
         return key in self._inner
     def __iter__(self):
@@ -118,13 +161,17 @@ class ValueDictWrapper(object):
         for k, v in self._inner.iteritems():
             yield k, self._decode(k, v)
 
-def try_sync(db_weakref):
-    db = db_weakref()
-    if db is None:
-        return
-    db.sync()
 
-def safe_open_db(filename):
-    db = bsddb.hashopen(filename)
-    atexit.register(try_sync, weakref.ref(db))
-    return db
+class JSONValueWrapper(ValueDictWrapper):
+    def _encode(self, addr, content):
+        return json.dumps(content)
+    def _decode(self, addr, data):
+        return json.loads(data)
+
+import cPickle
+
+class PickleValueWrapper(ValueDictWrapper):
+    def _encode(self, addr, content):
+        return cPickle.dumps(content) #, cPickle.HIGHEST_PROTOCOL)
+    def _decode(self, addr, data):
+        return cPickle.loads(data)

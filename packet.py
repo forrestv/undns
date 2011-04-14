@@ -3,13 +3,13 @@ import hashlib
 import zlib
 
 from Crypto.PublicKey import RSA
-from twisted.names import authority
+from twisted.names import authority, common
 
 import util
 
 class BindStringAuthority(authority.BindAuthority):
     def __init__(self, contents, origin):
-        names.common.ResolverBase.__init__(self)
+        common.ResolverBase.__init__(self)
         self.origin = origin
         lines = contents.splitlines(True)
         lines = self.stripComments(lines)
@@ -22,7 +22,7 @@ class DomainKey(object):
     
     @classmethod
     def generate(cls, rng):
-        return cls(RSA.generate(1024, rng))
+        return cls(RSA.generate(4096, rng))
     
     @classmethod
     def from_binary(cls, x):
@@ -37,8 +37,11 @@ class DomainKey(object):
     def to_binary(self):
         return zlib.compress(json.dumps(util.key_to_tuple(self._private_key)))
     
-    def get_address(self):
-        return util.key_to_address(self._private_key.publickey())
+    def get_name(self):
+        return util.key_to_name(self._private_key.publickey())
+    
+    def get_name_hash(self):
+        return util.key_to_name_hash(self._private_key.publickey())
     
     def encode(self, record, rng):
         return DomainPacket(self._private_key.publickey(), record, self._private_key.sign(record.get_hash(), rng))
@@ -55,27 +58,23 @@ class DomainPacket(object):
         if public_key.has_private():
             raise ValueError("key not public")
         assert isinstance(record, DomainRecord)
-        assert isinstance(signature, tuple)
+        signature = tuple(signature)
         
         self._public_key = public_key
         self._record = record
         self._signature = signature
-        
-        self._address = util.key_to_address(self._public_key)
-        self._address_hash = util.hash_address_hash(self._address).digest()
-        self._zone = None
     
     def to_binary(self):
         return zlib.compress(json.dumps(dict(public_key=util.key_to_tuple(self._public_key), record=self._record.to_obj(), signature=self._signature)))
     
     def verify_signature(self):
-        return public_key.verify(self._record.get_hash(), signature)
+        return self._public_key.verify(self._record.get_hash(), self._signature)
     
-    def get_address(self):
-        return self._address
+    def get_name(self):
+        return util.key_to_name(self._public_key)
     
-    def get_address_hash(self):
-        return self._address_hash
+    def get_name_hash(self):
+        return util.key_to_name_hash(self._public_key)
     
     def get_record(self):
         return self._record
@@ -84,23 +83,21 @@ class DomainRecord(object):
     "Information about a domain"
     
     @classmethod
-    def from_obj(cls, (zone_file, start_time, end_time)):
-        return cls(zone_file, start_time, end_time)
+    def from_obj(cls, (zone_file, end_time)):
+        return cls(zone_file, end_time)
     
-    def __init__(self, zone_file, start_time, end_time):
+    def __init__(self, zone_file, end_time):
         assert isinstance(zone_file, unicode)
-        assert isinstance(start_time, (int, long))
         assert isinstance(end_time, (int, long))
         
         self._zone_file = zone_file
-        self._start_file = start_time
         self._end_time = end_time
     
     def to_obj(self):
-        return (self._zone_file, self._start_time, self._end_time)
+        return (self._zone_file, self._end_time)
     
     def to_binary(self):
-        return json.dumps(dict(zone_file=self._zone_file, start_time=self._start_time, end_time=self._end_time))
+        return json.dumps(dict(zone_file=self._zone_file, end_time=self._end_time))
     
     def get_zone_file(self):
         return self._zone_file
@@ -109,33 +106,21 @@ class DomainRecord(object):
         assert not address.endswith('.')
         return BindStringAuthority(self._zone_file.encode('utf8'), address + '.')
     
-    def get_start_time(self):
-        return self._start_time
-    
     def get_end_time(self):
         return self._end_time
     
     def get_hash(self):
-        return util.hash_sign(self.to_binary()).digest()
+        b = self.to_binary()
+        return util.ripemd160(b).digest() + hashlib.sha512(b).digest()
 
 if __name__ == '__main__':
     from Crypto import Random
     rng = Random.new().read
     
-    h = "hello, world!"
+    a = DomainKey.generate(rng)
     
-    a = MyIdentity.generate(rng)
+    print a.get_name()
+    print util.name_hash_to_name(a.get_name_hash())
     
-    print repr(a.to_binary())
-    print repr(a.get_id())
-    print repr(a.to_binary_public())
-    
-    print
-    d = a.sign(h, rng)
-    print repr(d)
-    
-    b = TheirIdentity.from_binary(a.to_binary_public())
-    
-    print repr(b.get_id())
-    print b.verify(h, d)
-
+    print util.name_to_name_hash(a.get_name()).encode('hex')
+    print a.get_name_hash().encode('hex')

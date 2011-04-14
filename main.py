@@ -3,6 +3,7 @@ import os
 import argparse
 import random
 import sys
+import sqlite3
 
 import twisted.names.common, twisted.names.client, twisted.names.dns, twisted.names.server, twisted.names.error, twisted.names.authority
 del twisted
@@ -28,8 +29,8 @@ parser.add_argument("-r", "--recursive-dns", metavar="PORT",
     help="run a TCP+UDP recursive dns server on PORT; you likely do want this - this is for clients",
     type=int, action="append", default=[], dest="recursive_dns_ports")
 parser.add_argument("-d", "--dht-port", metavar="PORT",
-    help="use UDP port PORT to connect to other DHT nodes and listen for connections (if not specified a random high port is chosen)",
-    type=int, action="store", default=random.randrange(49152, 65536), dest="dht_port")
+    help="use UDP port PORT to connect to other DHT nodes and listen for connections (default: last used or random if never used)",
+    type=int, action="store", default=None, dest="dht_port")
 parser.add_argument("-n", "--node", metavar="ADDR:PORT",
     help="connect to existing DHT node at ADDR listening on UDP port PORT",
     action="append", default=[], dest="dht_nodes")
@@ -46,8 +47,6 @@ args = parser.parse_args()
 
 rng = Random.new().read
 
-print name, "on port", args.dht_port
-
 def parse(x):
     if ':' not in x:
         return ('127.0.0.1', int(x))
@@ -55,13 +54,10 @@ def parse(x):
     return ip, int(port)
 knownNodes = map(parse, args.dht_nodes)
 
-n = server.UnDNSNode(udpPort=args.dht_port, db_prefix=args.config, rng=rng)
+n = server.UnDNSNode(udpPort=args.dht_port, config_db=sqlite3.connect(args.config, isolation_level=None), rng=rng)
 n.joinNetwork(knownNodes)
 
-rpc_factory = protocol.ServerFactory()
-rpc_factory.protocol = server.RPCProtocol
-for port in args.rpc_ports:
-    reactor.listenTCP(port, rpc_factory)
+print name, "on port", n.port
 
 resolver = server.UnDNSResolver(n)
 
@@ -74,5 +70,12 @@ recursive_dns = names.server.DNSServerFactory(authorities=[resolver], clients=[n
 for port in args.recursive_dns_ports:
     reactor.listenTCP(port, recursive_dns)
     reactor.listenUDP(port, names.dns.DNSDatagramProtocol(recursive_dns))
+
+rpc_factory = protocol.ServerFactory()
+rpc_factory.protocol = server.RPCProtocol
+rpc_factory.node = n
+rpc_factory.rng = rng
+for port in args.rpc_ports:
+    reactor.listenTCP(port, rpc_factory, interface="127.0.0.1")
 
 reactor.run()
